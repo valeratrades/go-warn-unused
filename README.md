@@ -1,3 +1,4 @@
+![](./doc/assets/nounusederrors.png)
 # Compile from source (Linux)
 Clone:
 ```sh
