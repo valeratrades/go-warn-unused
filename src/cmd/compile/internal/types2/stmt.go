@@ -765,7 +765,7 @@ func (check *Checker) typeSwitchStmt(inner stmtContext, s *syntax.SwitchStmt, gu
 	if lhs != nil {
 		if lhs.Value == "_" {
 			// _ := x.(type) is an invalid short variable declaration
-			check.softErrorf(lhs, NoNewVar, "no new variable on left side of :=")
+			check.unusedf(lhs, NoNewVar, "no new variable on left side of :=")
 			lhs = nil // avoid declared and not used error below
 		} else {
 			check.recordDef(lhs, nil) // lhs variable is implicitly declared in each cause clause

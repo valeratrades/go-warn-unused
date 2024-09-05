@@ -576,7 +576,7 @@ func (check *Checker) shortVarDecl(pos positioner, lhs, rhs []ast.Expr) {
 	check.processDelayed(top)
 
 	if len(newVars) == 0 && !hasErr {
-		check.softErrorf(pos, NoNewVar, "no new variables on left side of :=")
+		check.unusedf(pos, NoNewVar, "no new variables on left side of :=")
 		return
 	}
 
