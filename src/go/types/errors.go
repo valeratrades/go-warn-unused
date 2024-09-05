@@ -7,6 +7,7 @@
 package types
 
 import (
+	"cmd/compile/exporter"
 	"fmt"
 	"go/ast"
 	"go/token"
@@ -248,6 +249,17 @@ func (check *Checker) softErrorf(at positioner, code Code, format string, args .
 	err.addf(at, format, args...)
 	err.soft = true
 	err.report()
+}
+
+func (check *Checker) unusedf(at positioner, code Code, format string, args ...any) {
+	if exporter.NoUnusedErrorsFlagOn() {
+		err := check.newError(code)
+		err.addf(at, format, args...)
+		//NB: err.pos() is only possible if all UnusedError-like errors are NEVER multiline (otherwise move this down)
+		fmt.Printf("%s: %s, but nobody cares\n", err.posn(), err.msg())
+	} else {
+		check.softErrorf(at, code, format, args...)
+	}
 }
 
 func (check *Checker) versionErrorf(at positioner, v goVersion, format string, args ...any) {

@@ -161,6 +161,8 @@ and test commands:
 		directory, but it is not accessed. When -modfile is specified, an
 		alternate go.sum file is also used: its path is derived from the
 		-modfile flag by trimming the ".mod" extension and appending ".sum".
+	-nounusederrors
+		do not error on unused functions, imports, variables, etc.
 	-overlay file
 		read a JSON config file that provides an overlay for build operations.
 		The file is a JSON struct with a single field, named 'Replace', that

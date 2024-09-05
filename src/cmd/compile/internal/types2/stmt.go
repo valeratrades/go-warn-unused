@@ -64,7 +64,7 @@ func (check *Checker) usage(scope *Scope) {
 		return cmpPos(a.pos, b.pos)
 	})
 	for _, v := range unused {
-		check.softErrorf(v.pos, UnusedVar, "declared and not used: %s", v.name)
+		check.unusedf(v.pos, UnusedVar, "declared and not used: %s", v.name)
 	}
 
 	for _, scope := range scope.children {

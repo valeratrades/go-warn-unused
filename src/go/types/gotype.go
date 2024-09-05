@@ -47,6 +47,8 @@ The flags are:
 		verbose mode
 	-c
 		compiler used for installed packages (gc, gccgo, or source); default: source
+	-nounusederrors
+		treat "unused" errors as warnings
 
 Flags controlling additional output:
 
@@ -99,11 +101,12 @@ import (
 
 var (
 	// main operation modes
-	testFiles  = flag.Bool("t", false, "include in-package test files in a directory")
-	xtestFiles = flag.Bool("x", false, "consider only external test files in a directory")
-	allErrors  = flag.Bool("e", false, "report all errors, not just the first 10")
-	verbose    = flag.Bool("v", false, "verbose mode")
-	compiler   = flag.String("c", "source", "compiler used for installed packages (gc, gccgo, or source)")
+	testFiles   = flag.Bool("t", false, "include in-package test files in a directory")
+	xtestFiles  = flag.Bool("x", false, "consider only external test files in a directory")
+	allErrors   = flag.Bool("e", false, "report all errors, not just the first 10")
+	verbose     = flag.Bool("v", false, "verbose mode")
+	compiler    = flag.String("c", "source", "compiler used for installed packages (gc, gccgo, or source)")
+	nounusederr = flag.Bool("nounusederrors", false, "treat unused objects as warnings")
 
 	// additional output control
 	printAST      = flag.Bool("ast", false, "print AST")

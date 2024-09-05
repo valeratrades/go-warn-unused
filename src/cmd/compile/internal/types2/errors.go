@@ -7,6 +7,7 @@
 package types2
 
 import (
+	"cmd/compile/internal/base"
 	"cmd/compile/internal/syntax"
 	"fmt"
 	. "internal/types/errors"
@@ -226,6 +227,17 @@ func (check *Checker) errorf(at poser, code Code, format string, args ...any) {
 	err := check.newError(code)
 	err.addf(at, format, args...)
 	err.report()
+}
+
+func (check *Checker) unusedf(at poser, code Code, format string, args ...any) {
+	if base.Flag.NoUnusedErrors {
+		err := check.newError(code)
+		err.addf(at, format, args...)
+		//NB: err.pos() is only possible if all UnusedError-like errors are NEVER multiline (otherwise move this down)
+		fmt.Printf("%s: %s, but nobody cares\n", err.pos(), err.msg())
+	} else {
+		check.softErrorf(at, code, format, args...)
+	}
 }
 
 func (check *Checker) softErrorf(at poser, code Code, format string, args ...any) {

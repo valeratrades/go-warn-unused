@@ -168,6 +168,14 @@ func Warn(format string, args ...interface{}) {
 	WarnfAt(Pos, format, args...)
 }
 
+// WarnfErrAt reports what would be an error as a warning at pos.
+func WarnfErrAt(pos src.XPos, code errors.Code, format string, args ...interface{}) {
+	addErrorMsg(pos, code, format, args...)
+	if Flag.LowerM != 0 {
+		FlushErrors()
+	}
+}
+
 // WarnfAt reports a formatted warning at pos.
 // In general the Go compiler does NOT generate warnings,
 // so this should be used only when the user has opted in
