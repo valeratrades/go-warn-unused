@@ -49,6 +49,7 @@ const (
 	inlineExtraAppendCost = 0
 	// default is to inline if there's at most one call. -l=4 overrides this by using 1 instead.
 	inlineExtraCallCost  = 57              // 57 was benchmarked to provided most benefit with no bad surprises; see https://github.com/golang/go/issues/19348#issuecomment-439370742
+	inlineParamCallCost  = 17              // calling a parameter only costs this much extra (inlining might expose a constant function)
 	inlineExtraPanicCost = 1               // do not penalize inlining panics.
 	inlineExtraThrowCost = inlineMaxBudget // with current (2018-05/1.11) code, inlining runtime.throw does not help.
 
@@ -442,29 +443,39 @@ opSwitch:
 	// Call is okay if inlinable and we have the budget for the body.
 	case ir.OCALLFUNC:
 		n := n.(*ir.CallExpr)
-		// Functions that call runtime.getcaller{pc,sp} can not be inlined
-		// because getcaller{pc,sp} expect a pointer to the caller's first argument.
-		//
-		// runtime.throw is a "cheap call" like panic in normal code.
 		var cheap bool
 		if n.Fun.Op() == ir.ONAME {
 			name := n.Fun.(*ir.Name)
 			if name.Class == ir.PFUNC {
-				switch fn := types.RuntimeSymName(name.Sym()); fn {
-				case "getcallerpc", "getcallersp":
-					v.reason = "call to " + fn
-					return true
-				case "throw":
-					v.budget -= inlineExtraThrowCost
-					break opSwitch
-				case "panicrangestate":
-					cheap = true
-				}
-				// Special case for internal/abi.NoEscape. It does just type
-				// conversions to appease the escape analysis, and doesn't
-				// generate code.
-				if s := name.Sym(); s.Name == "NoEscape" && s.Pkg.Path == "internal/abi" {
-					cheap = true
+				s := name.Sym()
+				fn := s.Name
+				switch s.Pkg.Path {
+				case "internal/abi":
+					switch fn {
+					case "NoEscape":
+						// Special case for internal/abi.NoEscape. It does just type
+						// conversions to appease the escape analysis, and doesn't
+						// generate code.
+						cheap = true
+					}
+				case "internal/runtime/sys":
+					switch fn {
+					case "GetCallerPC", "GetCallerSP":
+						// Functions that call GetCallerPC/SP can not be inlined
+						// because users expect the PC/SP of the logical caller,
+						// but GetCallerPC/SP returns the physical caller.
+						v.reason = "call to " + fn
+						return true
+					}
+				case "go.runtime":
+					switch fn {
+					case "throw":
+						// runtime.throw is a "cheap call" like panic in normal code.
+						v.budget -= inlineExtraThrowCost
+						break opSwitch
+					case "panicrangestate":
+						cheap = true
+					}
 				}
 			}
 			// Special case for coverage counter updates; although
@@ -510,6 +521,10 @@ opSwitch:
 			}
 		}
 
+		// A call to a parameter is optimistically a cheap call, if it's a constant function
+		// perhaps it will inline, it also can simplify escape analysis.
+		extraCost := v.extraCallCost
+
 		if n.Fun.Op() == ir.ONAME {
 			name := n.Fun.(*ir.Name)
 			if name.Class == ir.PFUNC {
@@ -528,6 +543,9 @@ opSwitch:
 						cheap = true
 					}
 				}
+			}
+			if name.Class == ir.PPARAM || name.Class == ir.PAUTOHEAP && name.IsClosureVar() {
+				extraCost = min(extraCost, inlineParamCallCost)
 			}
 		}
 
@@ -562,7 +580,7 @@ opSwitch:
 		}
 
 		// Call cost for non-leaf inlining.
-		v.budget -= v.extraCallCost
+		v.budget -= extraCost
 
 	case ir.OCALLMETH:
 		base.FatalfAt(n.Pos(), "OCALLMETH missed by typecheck")
@@ -1020,7 +1038,7 @@ func mkinlcall(callerfn *ir.Func, n *ir.CallExpr, fn *ir.Func, bigCaller bool) *
 		// typecheck.Target.Decls (ir.UseClosure adds all closures to
 		// Decls).
 		//
-		// However, non-trivial closures in Decls are ignored, and are
+		// However, closures in Decls are ignored, and are
 		// instead enqueued when walk of the calling function
 		// discovers them.
 		//
@@ -1045,8 +1063,8 @@ func mkinlcall(callerfn *ir.Func, n *ir.CallExpr, fn *ir.Func, bigCaller bool) *
 		}
 
 		clo := n.Fun.(*ir.ClosureExpr)
-		if ir.IsTrivialClosure(clo) {
-			// enqueueFunc will handle trivial closures anyways.
+		if !clo.Func.IsClosure() {
+			// enqueueFunc will handle non closures anyways.
 			return
 		}
 

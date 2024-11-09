@@ -305,25 +305,18 @@ func (f *File) WriteString(s string) (n int, err error) {
 // bits (before umask).
 // If there is an error, it will be of type *PathError.
 func Mkdir(name string, perm FileMode) error {
-	longName := fixLongPath(name)
-	e := ignoringEINTR(func() error {
-		return syscall.Mkdir(longName, syscallMode(perm))
-	})
-
-	if e != nil {
-		return &PathError{Op: "mkdir", Path: name, Err: e}
+	err := mkdir(name, perm)
+	if err != nil {
+		return &PathError{Op: "mkdir", Path: name, Err: err}
 	}
-
 	// mkdir(2) itself won't handle the sticky bit on *BSD and Solaris
 	if !supportsCreateWithStickyBit && perm&ModeSticky != 0 {
-		e = setStickyBit(name)
-
-		if e != nil {
+		err = setStickyBit(name)
+		if err != nil {
 			Remove(name)
-			return e
+			return err
 		}
 	}
-
 	return nil
 }
 
@@ -374,6 +367,7 @@ func Open(name string) (*File, error) {
 // it is truncated. If the file does not exist, it is created with mode 0o666
 // (before umask). If successful, methods on the returned File can
 // be used for I/O; the associated file descriptor has mode O_RDWR.
+// The directory containing the file must already exist.
 // If there is an error, it will be of type *PathError.
 func Create(name string) (*File, error) {
 	return OpenFile(name, O_RDWR|O_CREATE|O_TRUNC, 0666)
@@ -382,7 +376,8 @@ func Create(name string) (*File, error) {
 // OpenFile is the generalized open call; most users will use Open
 // or Create instead. It opens the named file with specified flag
 // (O_RDONLY etc.). If the file does not exist, and the O_CREATE flag
-// is passed, it is created with mode perm (before umask). If successful,
+// is passed, it is created with mode perm (before umask);
+// the containing directory must exist. If successful,
 // methods on the returned File can be used for I/O.
 // If there is an error, it will be of type *PathError.
 func OpenFile(name string, flag int, perm FileMode) (*File, error) {

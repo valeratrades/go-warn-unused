@@ -480,7 +480,7 @@ func (d *dwctxt) dotypedef(parent *dwarf.DWDie, name string, def *dwarf.DWDie) *
 		return nil
 	}
 	if def == nil {
-		Errorf(nil, "dwarf: bad def in dotypedef")
+		Errorf("dwarf: bad def in dotypedef")
 	}
 
 	// Create a new loader symbol for the typedef. We no longer
@@ -873,98 +873,64 @@ func (d *dwctxt) synthesizemaptypes(ctxt *Link, die *dwarf.DWDie) {
 }
 
 func (d *dwctxt) synthesizemaptypesSwiss(ctxt *Link, die *dwarf.DWDie) {
-	hash := walktypedef(d.findprotodie(ctxt, "type:runtime.hmap"))
-	bucket := walktypedef(d.findprotodie(ctxt, "type:runtime.bmap"))
-
-	if hash == nil {
-		return
-	}
+	mapType := walktypedef(d.findprotodie(ctxt, "type:internal/runtime/maps.Map"))
+	tableType := walktypedef(d.findprotodie(ctxt, "type:internal/runtime/maps.table"))
+	groupsReferenceType := walktypedef(d.findprotodie(ctxt, "type:internal/runtime/maps.groupsReference"))
 
 	for ; die != nil; die = die.Link {
 		if die.Abbrev != dwarf.DW_ABRV_MAPTYPE {
 			continue
 		}
 		gotype := loader.Sym(getattr(die, dwarf.DW_AT_type).Data.(dwSym))
-		keytype := decodetypeMapKey(d.ldr, d.arch, gotype)
-		valtype := decodetypeMapValue(d.ldr, d.arch, gotype)
-		keydata := d.ldr.Data(keytype)
-		valdata := d.ldr.Data(valtype)
-		keysize, valsize := decodetypeSize(d.arch, keydata), decodetypeSize(d.arch, valdata)
-		keytype, valtype = d.walksymtypedef(d.defgotype(keytype)), d.walksymtypedef(d.defgotype(valtype))
 
-		// compute size info like hashmap.c does.
-		indirectKey, indirectVal := false, false
-		if keysize > abi.SwissMapMaxKeyBytes {
-			keysize = int64(d.arch.PtrSize)
-			indirectKey = true
-		}
-		if valsize > abi.SwissMapMaxElemBytes {
-			valsize = int64(d.arch.PtrSize)
-			indirectVal = true
-		}
+		keyType := decodetypeMapKey(d.ldr, d.arch, gotype)
+		valType := decodetypeMapValue(d.ldr, d.arch, gotype)
+		groupType := decodetypeMapSwissGroup(d.ldr, d.arch, gotype)
 
-		// Construct type to represent an array of BucketSize keys
-		keyname := d.nameFromDIESym(keytype)
-		dwhks := d.mkinternaltype(ctxt, dwarf.DW_ABRV_ARRAYTYPE, "[]key", keyname, "", func(dwhk *dwarf.DWDie) {
-			newattr(dwhk, dwarf.DW_AT_byte_size, dwarf.DW_CLS_CONSTANT, abi.SwissMapBucketCount*keysize, 0)
-			t := keytype
-			if indirectKey {
-				t = d.defptrto(keytype)
-			}
-			d.newrefattr(dwhk, dwarf.DW_AT_type, t)
-			fld := d.newdie(dwhk, dwarf.DW_ABRV_ARRAYRANGE, "size")
-			newattr(fld, dwarf.DW_AT_count, dwarf.DW_CLS_CONSTANT, abi.SwissMapBucketCount, 0)
-			d.newrefattr(fld, dwarf.DW_AT_type, d.uintptrInfoSym)
+		keyType = d.walksymtypedef(d.defgotype(keyType))
+		valType = d.walksymtypedef(d.defgotype(valType))
+		groupType = d.walksymtypedef(d.defgotype(groupType))
+
+		keyName := d.nameFromDIESym(keyType)
+		valName := d.nameFromDIESym(valType)
+
+		// Construct groupsReference[K,V]
+		dwGroupsReference := d.mkinternaltype(ctxt, dwarf.DW_ABRV_STRUCTTYPE, "groupReference", keyName, valName, func(dwh *dwarf.DWDie) {
+			d.copychildren(ctxt, dwh, groupsReferenceType)
+			// data *group[K,V]
+			//
+			// This is actually a pointer to an array
+			// *[lengthMask+1]group[K,V], but the length is
+			// variable, so we can't statically record the length.
+			d.substitutetype(dwh, "data", d.defptrto(groupType))
+			newattr(dwh, dwarf.DW_AT_byte_size, dwarf.DW_CLS_CONSTANT, getattr(groupsReferenceType, dwarf.DW_AT_byte_size).Value, nil)
+			newattr(dwh, dwarf.DW_AT_go_kind, dwarf.DW_CLS_CONSTANT, int64(abi.Struct), 0)
 		})
 
-		// Construct type to represent an array of BucketSize values
-		valname := d.nameFromDIESym(valtype)
-		dwhvs := d.mkinternaltype(ctxt, dwarf.DW_ABRV_ARRAYTYPE, "[]val", valname, "", func(dwhv *dwarf.DWDie) {
-			newattr(dwhv, dwarf.DW_AT_byte_size, dwarf.DW_CLS_CONSTANT, abi.SwissMapBucketCount*valsize, 0)
-			t := valtype
-			if indirectVal {
-				t = d.defptrto(valtype)
-			}
-			d.newrefattr(dwhv, dwarf.DW_AT_type, t)
-			fld := d.newdie(dwhv, dwarf.DW_ABRV_ARRAYRANGE, "size")
-			newattr(fld, dwarf.DW_AT_count, dwarf.DW_CLS_CONSTANT, abi.SwissMapBucketCount, 0)
-			d.newrefattr(fld, dwarf.DW_AT_type, d.uintptrInfoSym)
+		// Construct table[K,V]
+		dwTable := d.mkinternaltype(ctxt, dwarf.DW_ABRV_STRUCTTYPE, "table", keyName, valName, func(dwh *dwarf.DWDie) {
+			d.copychildren(ctxt, dwh, tableType)
+			d.substitutetype(dwh, "groups", dwGroupsReference)
+			newattr(dwh, dwarf.DW_AT_byte_size, dwarf.DW_CLS_CONSTANT, getattr(tableType, dwarf.DW_AT_byte_size).Value, nil)
+			newattr(dwh, dwarf.DW_AT_go_kind, dwarf.DW_CLS_CONSTANT, int64(abi.Struct), 0)
 		})
 
-		// Construct bucket<K,V>
-		dwhbs := d.mkinternaltype(ctxt, dwarf.DW_ABRV_STRUCTTYPE, "bucket", keyname, valname, func(dwhb *dwarf.DWDie) {
-			// Copy over all fields except the field "data" from the generic
-			// bucket. "data" will be replaced with keys/values below.
-			d.copychildrenexcept(ctxt, dwhb, bucket, findchild(bucket, "data"))
-
-			fld := d.newdie(dwhb, dwarf.DW_ABRV_STRUCTFIELD, "keys")
-			d.newrefattr(fld, dwarf.DW_AT_type, dwhks)
-			newmemberoffsetattr(fld, abi.SwissMapBucketCount)
-			fld = d.newdie(dwhb, dwarf.DW_ABRV_STRUCTFIELD, "values")
-			d.newrefattr(fld, dwarf.DW_AT_type, dwhvs)
-			newmemberoffsetattr(fld, abi.SwissMapBucketCount+abi.SwissMapBucketCount*int32(keysize))
-			fld = d.newdie(dwhb, dwarf.DW_ABRV_STRUCTFIELD, "overflow")
-			d.newrefattr(fld, dwarf.DW_AT_type, d.defptrto(d.dtolsym(dwhb.Sym)))
-			newmemberoffsetattr(fld, abi.SwissMapBucketCount+abi.SwissMapBucketCount*(int32(keysize)+int32(valsize)))
-			if d.arch.RegSize > d.arch.PtrSize {
-				fld = d.newdie(dwhb, dwarf.DW_ABRV_STRUCTFIELD, "pad")
-				d.newrefattr(fld, dwarf.DW_AT_type, d.uintptrInfoSym)
-				newmemberoffsetattr(fld, abi.SwissMapBucketCount+abi.SwissMapBucketCount*(int32(keysize)+int32(valsize))+int32(d.arch.PtrSize))
-			}
-
-			newattr(dwhb, dwarf.DW_AT_byte_size, dwarf.DW_CLS_CONSTANT, abi.SwissMapBucketCount+abi.SwissMapBucketCount*keysize+abi.SwissMapBucketCount*valsize+int64(d.arch.RegSize), 0)
+		// Construct map[K,V]
+		dwMap := d.mkinternaltype(ctxt, dwarf.DW_ABRV_STRUCTTYPE, "map", keyName, valName, func(dwh *dwarf.DWDie) {
+			d.copychildren(ctxt, dwh, mapType)
+			// dirPtr is a pointer to a variable-length array of
+			// *table[K,V], of length dirLen.
+			//
+			// Since we can't directly define a variable-length
+			// array, store this as **table[K,V]. i.e., pointer to
+			// the first entry in the array.
+			d.substitutetype(dwh, "dirPtr", d.defptrto(d.defptrto(dwTable)))
+			newattr(dwh, dwarf.DW_AT_byte_size, dwarf.DW_CLS_CONSTANT, getattr(mapType, dwarf.DW_AT_byte_size).Value, nil)
+			newattr(dwh, dwarf.DW_AT_go_kind, dwarf.DW_CLS_CONSTANT, int64(abi.Struct), 0)
 		})
 
-		// Construct hash<K,V>
-		dwhs := d.mkinternaltype(ctxt, dwarf.DW_ABRV_STRUCTTYPE, "hash", keyname, valname, func(dwh *dwarf.DWDie) {
-			d.copychildren(ctxt, dwh, hash)
-			d.substitutetype(dwh, "buckets", d.defptrto(dwhbs))
-			d.substitutetype(dwh, "oldbuckets", d.defptrto(dwhbs))
-			newattr(dwh, dwarf.DW_AT_byte_size, dwarf.DW_CLS_CONSTANT, getattr(hash, dwarf.DW_AT_byte_size).Value, nil)
-		})
-
-		// make map type a pointer to hash<K,V>
-		d.newrefattr(die, dwarf.DW_AT_type, d.defptrto(dwhs))
+		// make map type a pointer to map[K,V]
+		d.newrefattr(die, dwarf.DW_AT_type, d.defptrto(dwMap))
 	}
 }
 
@@ -1874,11 +1840,17 @@ func dwarfGenerateDebugInfo(ctxt *Link) {
 	prototypedies = map[string]*dwarf.DWDie{
 		"type:runtime.stringStructDWARF": nil,
 		"type:runtime.slice":             nil,
-		"type:runtime.hmap":              nil,
-		"type:runtime.bmap":              nil,
 		"type:runtime.sudog":             nil,
 		"type:runtime.waitq":             nil,
 		"type:runtime.hchan":             nil,
+	}
+	if buildcfg.Experiment.SwissMap {
+		prototypedies["type:internal/runtime/maps.Map"] = nil
+		prototypedies["type:internal/runtime/maps.table"] = nil
+		prototypedies["type:internal/runtime/maps.groupsReference"] = nil
+	} else {
+		prototypedies["type:runtime.hmap"] = nil
+		prototypedies["type:runtime.bmap"] = nil
 	}
 
 	// Needed by the prettyprinter code for interface inspection.
@@ -1993,8 +1965,9 @@ func dwarfGenerateDebugInfo(ctxt *Link) {
 			continue
 		}
 		t := d.ldr.SymType(idx)
-		switch t {
-		case sym.SRODATA, sym.SDATA, sym.SNOPTRDATA, sym.STYPE, sym.SBSS, sym.SNOPTRBSS, sym.STLSBSS:
+		switch {
+		case t.IsRODATA(), t.IsDATA(), t.IsNOPTRDATA(),
+			t == sym.STYPE, t == sym.SBSS, t == sym.SNOPTRBSS, t == sym.STLSBSS:
 			// ok
 		default:
 			continue

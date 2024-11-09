@@ -156,38 +156,39 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 			return nil
 		},
 		all...)
-	add("runtime", "getclosureptr",
-		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
-			return s.newValue0(ssa.OpGetClosurePtr, s.f.Config.Types.Uintptr)
-		},
-		all...)
-
-	add("runtime", "getcallerpc",
-		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
-			return s.newValue0(ssa.OpGetCallerPC, s.f.Config.Types.Uintptr)
-		},
-		all...)
-
-	add("runtime", "getcallersp",
-		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
-			return s.newValue1(ssa.OpGetCallerSP, s.f.Config.Types.Uintptr, s.mem())
-		},
-		all...)
 
 	addF("runtime", "publicationBarrier",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			s.vars[memVar] = s.newValue1(ssa.OpPubBarrier, types.TypeMem, s.mem())
 			return nil
 		},
-		sys.ARM64, sys.PPC64, sys.RISCV64)
+		sys.ARM64, sys.Loong64, sys.PPC64, sys.RISCV64)
 
-	brev_arch := []sys.ArchFamily{sys.AMD64, sys.I386, sys.ARM64, sys.ARM, sys.S390X}
+	/******** internal/runtime/sys ********/
+	add("internal/runtime/sys", "GetCallerPC",
+		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+			return s.newValue0(ssa.OpGetCallerPC, s.f.Config.Types.Uintptr)
+		},
+		all...)
+
+	add("internal/runtime/sys", "GetCallerSP",
+		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+			return s.newValue1(ssa.OpGetCallerSP, s.f.Config.Types.Uintptr, s.mem())
+		},
+		all...)
+
+	add("internal/runtime/sys", "GetClosurePtr",
+		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+			return s.newValue0(ssa.OpGetClosurePtr, s.f.Config.Types.Uintptr)
+		},
+		all...)
+
+	brev_arch := []sys.ArchFamily{sys.AMD64, sys.I386, sys.ARM64, sys.ARM, sys.Loong64, sys.S390X}
 	if cfg.goppc64 >= 10 {
 		// Use only on Power10 as the new byte reverse instructions that Power10 provide
 		// make it worthwhile as an intrinsic
 		brev_arch = append(brev_arch, sys.PPC64)
 	}
-	/******** internal/runtime/sys ********/
 	addF("internal/runtime/sys", "Bswap32",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			return s.newValue1(ssa.OpBswap32, types.Types[types.TUINT32], args[0])
@@ -215,6 +216,8 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 		sys.AMD64, sys.ARM64, sys.PPC64)
 
 	/******** internal/runtime/atomic ********/
+	type atomicOpEmitter func(s *state, n *ir.CallExpr, args []*ssa.Value, op ssa.Op, typ types.Kind, needReturn bool)
+
 	addF("internal/runtime/atomic", "Load",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			v := s.newValue2(ssa.OpAtomicLoad32, types.NewTuple(types.Types[types.TUINT32], types.TypeMem), args[0], s.mem())
@@ -263,19 +266,19 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 			s.vars[memVar] = s.newValue3(ssa.OpAtomicStore32, types.TypeMem, args[0], args[1], s.mem())
 			return nil
 		},
-		sys.AMD64, sys.ARM64, sys.Loong64, sys.MIPS, sys.MIPS64, sys.PPC64, sys.RISCV64, sys.S390X)
+		sys.AMD64, sys.ARM64, sys.MIPS, sys.MIPS64, sys.PPC64, sys.RISCV64, sys.S390X)
 	addF("internal/runtime/atomic", "Store8",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			s.vars[memVar] = s.newValue3(ssa.OpAtomicStore8, types.TypeMem, args[0], args[1], s.mem())
 			return nil
 		},
-		sys.AMD64, sys.ARM64, sys.Loong64, sys.MIPS, sys.MIPS64, sys.PPC64, sys.RISCV64, sys.S390X)
+		sys.AMD64, sys.ARM64, sys.MIPS, sys.MIPS64, sys.PPC64, sys.RISCV64, sys.S390X)
 	addF("internal/runtime/atomic", "Store64",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			s.vars[memVar] = s.newValue3(ssa.OpAtomicStore64, types.TypeMem, args[0], args[1], s.mem())
 			return nil
 		},
-		sys.AMD64, sys.ARM64, sys.Loong64, sys.MIPS64, sys.PPC64, sys.RISCV64, sys.S390X)
+		sys.AMD64, sys.ARM64, sys.MIPS64, sys.PPC64, sys.RISCV64, sys.S390X)
 	addF("internal/runtime/atomic", "StorepNoWB",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			s.vars[memVar] = s.newValue3(ssa.OpAtomicStorePtrNoWB, types.TypeMem, args[0], args[1], s.mem())
@@ -295,6 +298,77 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 		},
 		sys.PPC64)
 
+	makeAtomicGuardedIntrinsicLoong64common := func(op0, op1 ssa.Op, typ types.Kind, emit atomicOpEmitter, needReturn bool) intrinsicBuilder {
+		return func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+			// Target Atomic feature is identified by dynamic detection
+			addr := s.entryNewValue1A(ssa.OpAddr, types.Types[types.TBOOL].PtrTo(), ir.Syms.Loong64HasLAM_BH, s.sb)
+			v := s.load(types.Types[types.TBOOL], addr)
+			b := s.endBlock()
+			b.Kind = ssa.BlockIf
+			b.SetControl(v)
+			bTrue := s.f.NewBlock(ssa.BlockPlain)
+			bFalse := s.f.NewBlock(ssa.BlockPlain)
+			bEnd := s.f.NewBlock(ssa.BlockPlain)
+			b.AddEdgeTo(bTrue)
+			b.AddEdgeTo(bFalse)
+			b.Likely = ssa.BranchLikely
+
+			// We have atomic instructions - use it directly.
+			s.startBlock(bTrue)
+			emit(s, n, args, op1, typ, needReturn)
+			s.endBlock().AddEdgeTo(bEnd)
+
+			// Use original instruction sequence.
+			s.startBlock(bFalse)
+			emit(s, n, args, op0, typ, needReturn)
+			s.endBlock().AddEdgeTo(bEnd)
+
+			// Merge results.
+			s.startBlock(bEnd)
+
+			if needReturn {
+				return s.variable(n, types.Types[typ])
+			} else {
+				return nil
+			}
+		}
+	}
+
+	makeAtomicStoreGuardedIntrinsicLoong64 := func(op0, op1 ssa.Op, typ types.Kind, emit atomicOpEmitter) intrinsicBuilder {
+		return makeAtomicGuardedIntrinsicLoong64common(op0, op1, typ, emit, false)
+	}
+
+	atomicStoreEmitterLoong64 := func(s *state, n *ir.CallExpr, args []*ssa.Value, op ssa.Op, typ types.Kind, needReturn bool) {
+		v := s.newValue3(op, types.NewTuple(types.Types[typ], types.TypeMem), args[0], args[1], s.mem())
+		s.vars[memVar] = s.newValue1(ssa.OpSelect1, types.TypeMem, v)
+		if needReturn {
+			s.vars[n] = s.newValue1(ssa.OpSelect0, types.Types[typ], v)
+		}
+	}
+
+	addF("internal/runtime/atomic", "Store8",
+		makeAtomicStoreGuardedIntrinsicLoong64(ssa.OpAtomicStore8, ssa.OpAtomicStore8Variant, types.TUINT8, atomicStoreEmitterLoong64),
+		sys.Loong64)
+	addF("internal/runtime/atomic", "Store",
+		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+			s.vars[memVar] = s.newValue3(ssa.OpAtomicStore32Variant, types.TypeMem, args[0], args[1], s.mem())
+			return nil
+		},
+		sys.Loong64)
+	addF("internal/runtime/atomic", "Store64",
+		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+			s.vars[memVar] = s.newValue3(ssa.OpAtomicStore64Variant, types.TypeMem, args[0], args[1], s.mem())
+			return nil
+		},
+		sys.Loong64)
+
+	addF("internal/runtime/atomic", "Xchg8",
+		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+			v := s.newValue3(ssa.OpAtomicExchange8, types.NewTuple(types.Types[types.TUINT8], types.TypeMem), args[0], args[1], s.mem())
+			s.vars[memVar] = s.newValue1(ssa.OpSelect1, types.TypeMem, v)
+			return s.newValue1(ssa.OpSelect0, types.Types[types.TUINT8], v)
+		},
+		sys.AMD64, sys.PPC64)
 	addF("internal/runtime/atomic", "Xchg",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			v := s.newValue3(ssa.OpAtomicExchange32, types.NewTuple(types.Types[types.TUINT32], types.TypeMem), args[0], args[1], s.mem())
@@ -309,8 +383,6 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 			return s.newValue1(ssa.OpSelect0, types.Types[types.TUINT64], v)
 		},
 		sys.AMD64, sys.Loong64, sys.MIPS64, sys.PPC64, sys.RISCV64, sys.S390X)
-
-	type atomicOpEmitter func(s *state, n *ir.CallExpr, args []*ssa.Value, op ssa.Op, typ types.Kind, needReturn bool)
 
 	makeAtomicGuardedIntrinsicARM64common := func(op0, op1 ssa.Op, typ types.Kind, emit atomicOpEmitter, needReturn bool) intrinsicBuilder {
 
@@ -365,6 +437,9 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 			s.vars[n] = s.newValue1(ssa.OpSelect0, types.Types[typ], v)
 		}
 	}
+	addF("internal/runtime/atomic", "Xchg8",
+		makeAtomicGuardedIntrinsicARM64(ssa.OpAtomicExchange8, ssa.OpAtomicExchange8Variant, types.TUINT8, atomicEmitterARM64),
+		sys.ARM64)
 	addF("internal/runtime/atomic", "Xchg",
 		makeAtomicGuardedIntrinsicARM64(ssa.OpAtomicExchange32, ssa.OpAtomicExchange32Variant, types.TUINT32, atomicEmitterARM64),
 		sys.ARM64)
@@ -614,7 +689,7 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			return s.newValue3(ssa.OpFMA, types.Types[types.TFLOAT64], args[0], args[1], args[2])
 		},
-		sys.ARM64, sys.PPC64, sys.RISCV64, sys.S390X)
+		sys.ARM64, sys.Loong64, sys.PPC64, sys.RISCV64, sys.S390X)
 	addF("math", "FMA",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			if !s.config.UseFMA {
@@ -736,7 +811,14 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			return s.newValue1(ssa.OpCtz64, types.Types[types.TINT], args[0])
 		},
-		sys.AMD64, sys.I386, sys.ARM64, sys.ARM, sys.S390X, sys.MIPS, sys.PPC64, sys.Wasm)
+		sys.AMD64, sys.ARM64, sys.ARM, sys.S390X, sys.MIPS, sys.PPC64, sys.Wasm)
+	addF("math/bits", "TrailingZeros64",
+		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+			lo := s.newValue1(ssa.OpInt64Lo, types.Types[types.TUINT32], args[0])
+			hi := s.newValue1(ssa.OpInt64Hi, types.Types[types.TUINT32], args[0])
+			return s.newValue2(ssa.OpCtz64On32, types.Types[types.TINT], lo, hi)
+		},
+		sys.I386)
 	addF("math/bits", "TrailingZeros32",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			return s.newValue1(ssa.OpCtz32, types.Types[types.TINT], args[0])
@@ -786,6 +868,11 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 		sys.S390X)
 	alias("math/bits", "ReverseBytes64", "internal/runtime/sys", "Bswap64", all...)
 	alias("math/bits", "ReverseBytes32", "internal/runtime/sys", "Bswap32", all...)
+	addF("math/bits", "ReverseBytes16",
+		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+			return s.newValue1(ssa.OpBswap16, types.Types[types.TUINT16], args[0])
+		},
+		sys.Loong64)
 	// ReverseBytes inlines correctly, no need to intrinsify it.
 	// Nothing special is needed for targets where ReverseBytes16 lowers to a rotate
 	// On Power10, 16-bit rotate is not available so use BRH instruction
@@ -801,12 +888,12 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			return s.newValue1(ssa.OpBitLen64, types.Types[types.TINT], args[0])
 		},
-		sys.AMD64, sys.ARM64, sys.ARM, sys.S390X, sys.MIPS, sys.PPC64, sys.Wasm)
+		sys.AMD64, sys.ARM64, sys.ARM, sys.Loong64, sys.S390X, sys.MIPS, sys.PPC64, sys.Wasm)
 	addF("math/bits", "Len32",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			return s.newValue1(ssa.OpBitLen32, types.Types[types.TINT], args[0])
 		},
-		sys.AMD64, sys.ARM64, sys.PPC64)
+		sys.AMD64, sys.ARM64, sys.Loong64, sys.PPC64)
 	addF("math/bits", "Len32",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			if s.config.PtrSize == 4 {
@@ -825,7 +912,7 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 			x := s.newValue1(ssa.OpZeroExt16to64, types.Types[types.TUINT64], args[0])
 			return s.newValue1(ssa.OpBitLen64, types.Types[types.TINT], x)
 		},
-		sys.ARM64, sys.ARM, sys.S390X, sys.MIPS, sys.PPC64, sys.Wasm)
+		sys.ARM64, sys.ARM, sys.Loong64, sys.S390X, sys.MIPS, sys.PPC64, sys.Wasm)
 	addF("math/bits", "Len16",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			return s.newValue1(ssa.OpBitLen16, types.Types[types.TINT], args[0])
@@ -840,7 +927,7 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 			x := s.newValue1(ssa.OpZeroExt8to64, types.Types[types.TUINT64], args[0])
 			return s.newValue1(ssa.OpBitLen64, types.Types[types.TINT], x)
 		},
-		sys.ARM64, sys.ARM, sys.S390X, sys.MIPS, sys.PPC64, sys.Wasm)
+		sys.ARM64, sys.ARM, sys.Loong64, sys.S390X, sys.MIPS, sys.PPC64, sys.Wasm)
 	addF("math/bits", "Len8",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			return s.newValue1(ssa.OpBitLen8, types.Types[types.TINT], args[0])
@@ -853,7 +940,7 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 			}
 			return s.newValue1(ssa.OpBitLen64, types.Types[types.TINT], args[0])
 		},
-		sys.AMD64, sys.ARM64, sys.ARM, sys.S390X, sys.MIPS, sys.PPC64, sys.Wasm)
+		sys.AMD64, sys.ARM64, sys.ARM, sys.Loong64, sys.S390X, sys.MIPS, sys.PPC64, sys.Wasm)
 	// LeadingZeros is handled because it trivially calls Len.
 	addF("math/bits", "Reverse64",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
@@ -1083,7 +1170,7 @@ func findIntrinsic(sym *types.Sym) intrinsicBuilder {
 
 	fn := sym.Name
 	if ssa.IntrinsicsDisable {
-		if pkg == "runtime" && (fn == "getcallerpc" || fn == "getcallersp" || fn == "getclosureptr") {
+		if pkg == "internal/runtime/sys" && (fn == "GetCallerPC" || fn == "GrtCallerSP" || fn == "GetClosurePtr") {
 			// These runtime functions don't have definitions, must be intrinsics.
 		} else {
 			return nil

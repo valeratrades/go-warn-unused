@@ -5,8 +5,6 @@
 package reflectdata
 
 import (
-	"internal/abi"
-
 	"cmd/compile/internal/base"
 	"cmd/compile/internal/ir"
 	"cmd/compile/internal/rttype"
@@ -14,25 +12,28 @@ import (
 	"cmd/internal/obj"
 	"cmd/internal/objabi"
 	"cmd/internal/src"
+	"internal/abi"
 )
 
-// SwissMapBucketType makes the map bucket type given the type of the map.
-func SwissMapBucketType(t *types.Type) *types.Type {
-	// Builds a type representing a Bucket structure for
-	// the given map type. This type is not visible to users -
-	// we include only enough information to generate a correct GC
-	// program for it.
-	// Make sure this stays in sync with runtime/map.go.
-	//
-	//	A "bucket" is a "struct" {
-	//	      tophash [abi.SwissMapBucketCount]uint8
-	//	      keys [abi.SwissMapBucketCount]keyType
-	//	      elems [abi.SwissMapBucketCount]elemType
-	//	      overflow *bucket
-	//	    }
-	if t.MapType().SwissBucket != nil {
-		return t.MapType().SwissBucket
+// SwissMapGroupType makes the map slot group type given the type of the map.
+func SwissMapGroupType(t *types.Type) *types.Type {
+	if t.MapType().SwissGroup != nil {
+		return t.MapType().SwissGroup
 	}
+
+	// Builds a type representing a group structure for the given map type.
+	// This type is not visible to users, we include it so we can generate
+	// a correct GC program for it.
+	//
+	// Make sure this stays in sync with internal/runtime/maps/group.go.
+	//
+	// type group struct {
+	//     ctrl uint64
+	//     slots [abi.SwissMapGroupSlots]struct {
+	//         key  keyType
+	//         elem elemType
+	//     }
+	// }
 
 	keytype := t.Key()
 	elemtype := t.Elem()
@@ -45,58 +46,35 @@ func SwissMapBucketType(t *types.Type) *types.Type {
 		elemtype = types.NewPtr(elemtype)
 	}
 
-	field := make([]*types.Field, 0, 5)
-
-	// The first field is: uint8 topbits[BUCKETSIZE].
-	arr := types.NewArray(types.Types[types.TUINT8], abi.SwissMapBucketCount)
-	field = append(field, makefield("topbits", arr))
-
-	arr = types.NewArray(keytype, abi.SwissMapBucketCount)
-	arr.SetNoalg(true)
-	keys := makefield("keys", arr)
-	field = append(field, keys)
-
-	arr = types.NewArray(elemtype, abi.SwissMapBucketCount)
-	arr.SetNoalg(true)
-	elems := makefield("elems", arr)
-	field = append(field, elems)
-
-	// If keys and elems have no pointers, the map implementation
-	// can keep a list of overflow pointers on the side so that
-	// buckets can be marked as having no pointers.
-	// Arrange for the bucket to have no pointers by changing
-	// the type of the overflow field to uintptr in this case.
-	// See comment on hmap.overflow in runtime/map.go.
-	otyp := types.Types[types.TUNSAFEPTR]
-	if !elemtype.HasPointers() && !keytype.HasPointers() {
-		otyp = types.Types[types.TUINTPTR]
+	slotFields := []*types.Field{
+		makefield("key", keytype),
+		makefield("elem", elemtype),
 	}
-	overflow := makefield("overflow", otyp)
-	field = append(field, overflow)
+	slot := types.NewStruct(slotFields)
+	slot.SetNoalg(true)
 
-	// link up fields
-	bucket := types.NewStruct(field[:])
-	bucket.SetNoalg(true)
-	types.CalcSize(bucket)
+	slotArr := types.NewArray(slot, abi.SwissMapGroupSlots)
+	slotArr.SetNoalg(true)
+
+	fields := []*types.Field{
+		makefield("ctrl", types.Types[types.TUINT64]),
+		makefield("slots", slotArr),
+	}
+
+	group := types.NewStruct(fields)
+	group.SetNoalg(true)
+	types.CalcSize(group)
 
 	// Check invariants that map code depends on.
 	if !types.IsComparable(t.Key()) {
 		base.Fatalf("unsupported map key type for %v", t)
 	}
-	if abi.SwissMapBucketCount < 8 {
-		base.Fatalf("bucket size %d too small for proper alignment %d", abi.SwissMapBucketCount, 8)
-	}
-	if uint8(keytype.Alignment()) > abi.SwissMapBucketCount {
-		base.Fatalf("key align too big for %v", t)
-	}
-	if uint8(elemtype.Alignment()) > abi.SwissMapBucketCount {
-		base.Fatalf("elem align %d too big for %v, BUCKETSIZE=%d", elemtype.Alignment(), t, abi.SwissMapBucketCount)
-	}
-	if keytype.Size() > abi.SwissMapMaxKeyBytes {
-		base.Fatalf("key size too large for %v", t)
-	}
-	if elemtype.Size() > abi.SwissMapMaxElemBytes {
-		base.Fatalf("elem size too large for %v", t)
+	if group.Size() <= 8 {
+		// internal/runtime/maps creates pointers to slots, even if
+		// both key and elem are size zero. In this case, each slot is
+		// size 0, but group should still reserve a word of padding at
+		// the end to ensure pointers are valid.
+		base.Fatalf("bad group size for %v", t)
 	}
 	if t.Key().Size() > abi.SwissMapMaxKeyBytes && !keytype.IsPtr() {
 		base.Fatalf("key indirect incorrect for %v", t)
@@ -104,190 +82,214 @@ func SwissMapBucketType(t *types.Type) *types.Type {
 	if t.Elem().Size() > abi.SwissMapMaxElemBytes && !elemtype.IsPtr() {
 		base.Fatalf("elem indirect incorrect for %v", t)
 	}
-	if keytype.Size()%keytype.Alignment() != 0 {
-		base.Fatalf("key size not a multiple of key align for %v", t)
-	}
-	if elemtype.Size()%elemtype.Alignment() != 0 {
-		base.Fatalf("elem size not a multiple of elem align for %v", t)
-	}
-	if uint8(bucket.Alignment())%uint8(keytype.Alignment()) != 0 {
-		base.Fatalf("bucket align not multiple of key align %v", t)
-	}
-	if uint8(bucket.Alignment())%uint8(elemtype.Alignment()) != 0 {
-		base.Fatalf("bucket align not multiple of elem align %v", t)
-	}
-	if keys.Offset%keytype.Alignment() != 0 {
-		base.Fatalf("bad alignment of keys in bmap for %v", t)
-	}
-	if elems.Offset%elemtype.Alignment() != 0 {
-		base.Fatalf("bad alignment of elems in bmap for %v", t)
-	}
 
-	// Double-check that overflow field is final memory in struct,
-	// with no padding at end.
-	if overflow.Offset != bucket.Size()-int64(types.PtrSize) {
-		base.Fatalf("bad offset of overflow in bmap for %v, overflow.Offset=%d, bucket.Size()-int64(types.PtrSize)=%d",
-			t, overflow.Offset, bucket.Size()-int64(types.PtrSize))
-	}
-
-	t.MapType().SwissBucket = bucket
-
-	bucket.StructType().Map = t
-	return bucket
+	t.MapType().SwissGroup = group
+	group.StructType().Map = t
+	return group
 }
 
-var swissHmapType *types.Type
+var cachedSwissTableType *types.Type
 
-// SwissMapType returns a type interchangeable with runtime.hmap.
-// Make sure this stays in sync with runtime/map.go.
-func SwissMapType() *types.Type {
-	if swissHmapType != nil {
-		return swissHmapType
+// swissTableType returns a type interchangeable with internal/runtime/maps.table.
+// Make sure this stays in sync with internal/runtime/maps/table.go.
+func swissTableType() *types.Type {
+	if cachedSwissTableType != nil {
+		return cachedSwissTableType
 	}
 
-	// build a struct:
-	// type hmap struct {
-	//    count      int
-	//    flags      uint8
-	//    B          uint8
-	//    noverflow  uint16
-	//    hash0      uint32
-	//    buckets    unsafe.Pointer
-	//    oldbuckets unsafe.Pointer
-	//    nevacuate  uintptr
-	//    extra      unsafe.Pointer // *mapextra
+	// type table struct {
+	//     used       uint16
+	//     capacity   uint16
+	//     growthLeft uint16
+	//     localDepth uint8
+	//     // N.B Padding
+	//
+	//     index int
+	//
+	//     // From groups.
+	//     groups_data       unsafe.Pointer
+	//     groups_lengthMask uint64
+	//     groups_entryMask  uint64
 	// }
-	// must match runtime/map.go:hmap.
+	// must match internal/runtime/maps/table.go:table.
 	fields := []*types.Field{
-		makefield("count", types.Types[types.TINT]),
-		makefield("flags", types.Types[types.TUINT8]),
-		makefield("B", types.Types[types.TUINT8]),
-		makefield("noverflow", types.Types[types.TUINT16]),
-		makefield("hash0", types.Types[types.TUINT32]),      // Used in walk.go for OMAKEMAP.
-		makefield("buckets", types.Types[types.TUNSAFEPTR]), // Used in walk.go for OMAKEMAP.
-		makefield("oldbuckets", types.Types[types.TUNSAFEPTR]),
-		makefield("nevacuate", types.Types[types.TUINTPTR]),
-		makefield("extra", types.Types[types.TUNSAFEPTR]),
+		makefield("used", types.Types[types.TUINT16]),
+		makefield("capacity", types.Types[types.TUINT16]),
+		makefield("growthLeft", types.Types[types.TUINT16]),
+		makefield("localDepth", types.Types[types.TUINT8]),
+		makefield("index", types.Types[types.TINT]),
+		makefield("groups_data", types.Types[types.TUNSAFEPTR]),
+		makefield("groups_lengthMask", types.Types[types.TUINT64]),
+		makefield("groups_entryMask", types.Types[types.TUINT64]),
 	}
 
-	n := ir.NewDeclNameAt(src.NoXPos, ir.OTYPE, ir.Pkgs.Runtime.Lookup("hmap"))
-	hmap := types.NewNamed(n)
-	n.SetType(hmap)
+	n := ir.NewDeclNameAt(src.NoXPos, ir.OTYPE, ir.Pkgs.InternalMaps.Lookup("table"))
+	table := types.NewNamed(n)
+	n.SetType(table)
 	n.SetTypecheck(1)
 
-	hmap.SetUnderlying(types.NewStruct(fields))
-	types.CalcSize(hmap)
+	table.SetUnderlying(types.NewStruct(fields))
+	types.CalcSize(table)
 
-	// The size of hmap should be 48 bytes on 64 bit
-	// and 28 bytes on 32 bit platforms.
-	if size := int64(8 + 5*types.PtrSize); hmap.Size() != size {
-		base.Fatalf("hmap size not correct: got %d, want %d", hmap.Size(), size)
+	// The size of table should be 40 bytes on 64 bit
+	// and 32 bytes on 32 bit platforms.
+	if size := int64(3*2 + 2*1 /* one extra for padding */ + 2*8 + 2*types.PtrSize); table.Size() != size {
+		base.Fatalf("internal/runtime/maps.table size not correct: got %d, want %d", table.Size(), size)
 	}
 
-	swissHmapType = hmap
-	return hmap
+	cachedSwissTableType = table
+	return table
 }
 
-var swissHiterType *types.Type
+var cachedSwissMapType *types.Type
+
+// SwissMapType returns a type interchangeable with internal/runtime/maps.Map.
+// Make sure this stays in sync with internal/runtime/maps/map.go.
+func SwissMapType() *types.Type {
+	if cachedSwissMapType != nil {
+		return cachedSwissMapType
+	}
+
+	// type Map struct {
+	//     used uint64
+	//     seed uintptr
+	//
+	//     dirPtr unsafe.Pointer
+	//     dirLen int
+	//
+	//     globalDepth uint8
+	//     globalShift uint8
+	//
+	//     writing uint8
+	//     // N.B Padding
+	//
+	//     clearSeq uint64
+	// }
+	// must match internal/runtime/maps/map.go:Map.
+	fields := []*types.Field{
+		makefield("used", types.Types[types.TUINT64]),
+		makefield("seed", types.Types[types.TUINTPTR]),
+		makefield("dirPtr", types.Types[types.TUNSAFEPTR]),
+		makefield("dirLen", types.Types[types.TINT]),
+		makefield("globalDepth", types.Types[types.TUINT8]),
+		makefield("globalShift", types.Types[types.TUINT8]),
+		makefield("writing", types.Types[types.TUINT8]),
+		makefield("clearSeq", types.Types[types.TUINT64]),
+	}
+
+	n := ir.NewDeclNameAt(src.NoXPos, ir.OTYPE, ir.Pkgs.InternalMaps.Lookup("Map"))
+	m := types.NewNamed(n)
+	n.SetType(m)
+	n.SetTypecheck(1)
+
+	m.SetUnderlying(types.NewStruct(fields))
+	types.CalcSize(m)
+
+	// The size of Map should be 48 bytes on 64 bit
+	// and 32 bytes on 32 bit platforms.
+	if size := int64(2*8 + 4*types.PtrSize /* one extra for globalDepth/globalShift/writing + padding */); m.Size() != size {
+		base.Fatalf("internal/runtime/maps.Map size not correct: got %d, want %d", m.Size(), size)
+	}
+
+	cachedSwissMapType = m
+	return m
+}
+
+var cachedSwissIterType *types.Type
 
 // SwissMapIterType returns a type interchangeable with runtime.hiter.
 // Make sure this stays in sync with runtime/map.go.
 func SwissMapIterType() *types.Type {
-	if swissHiterType != nil {
-		return swissHiterType
+	if cachedSwissIterType != nil {
+		return cachedSwissIterType
 	}
 
-	hmap := SwissMapType()
-
-	// build a struct:
-	// type hiter struct {
-	//    key         unsafe.Pointer // *Key
-	//    elem        unsafe.Pointer // *Elem
-	//    t           unsafe.Pointer // *SwissMapType
-	//    h           *hmap
-	//    buckets     unsafe.Pointer
-	//    bptr        unsafe.Pointer // *bmap
-	//    overflow    unsafe.Pointer // *[]*bmap
-	//    oldoverflow unsafe.Pointer // *[]*bmap
-	//    startBucket uintptr
-	//    offset      uint8
-	//    wrapped     bool
-	//    B           uint8
-	//    i           uint8
-	//    bucket      uintptr
-	//    checkBucket uintptr
+	// type Iter struct {
+	//    key  unsafe.Pointer // *Key
+	//    elem unsafe.Pointer // *Elem
+	//    typ  unsafe.Pointer // *SwissMapType
+	//    m    *Map
+	//
+	//    groupSlotOffset uint64
+	//    dirOffset       uint64
+	//
+	//    clearSeq uint64
+	//
+	//    globalDepth uint8
+	//    // N.B. padding
+	//
+	//    dirIdx int
+	//
+	//    tab *table
+	//
+	//    group unsafe.Pointer // actually groupReference.data
+	//
+	//    entryIdx uint64
 	// }
-	// must match runtime/map.go:hiter.
+	// must match internal/runtime/maps/table.go:Iter.
 	fields := []*types.Field{
 		makefield("key", types.Types[types.TUNSAFEPTR]),  // Used in range.go for TMAP.
 		makefield("elem", types.Types[types.TUNSAFEPTR]), // Used in range.go for TMAP.
-		makefield("t", types.Types[types.TUNSAFEPTR]),
-		makefield("h", types.NewPtr(hmap)),
-		makefield("buckets", types.Types[types.TUNSAFEPTR]),
-		makefield("bptr", types.Types[types.TUNSAFEPTR]),
-		makefield("overflow", types.Types[types.TUNSAFEPTR]),
-		makefield("oldoverflow", types.Types[types.TUNSAFEPTR]),
-		makefield("startBucket", types.Types[types.TUINTPTR]),
-		makefield("offset", types.Types[types.TUINT8]),
-		makefield("wrapped", types.Types[types.TBOOL]),
-		makefield("B", types.Types[types.TUINT8]),
-		makefield("i", types.Types[types.TUINT8]),
-		makefield("bucket", types.Types[types.TUINTPTR]),
-		makefield("checkBucket", types.Types[types.TUINTPTR]),
+		makefield("typ", types.Types[types.TUNSAFEPTR]),
+		makefield("m", types.NewPtr(SwissMapType())),
+		makefield("groupSlotOffset", types.Types[types.TUINT64]),
+		makefield("dirOffset", types.Types[types.TUINT64]),
+		makefield("clearSeq", types.Types[types.TUINT64]),
+		makefield("globalDepth", types.Types[types.TUINT8]),
+		makefield("dirIdx", types.Types[types.TINT]),
+		makefield("tab", types.NewPtr(swissTableType())),
+		makefield("group", types.Types[types.TUNSAFEPTR]),
+		makefield("entryIdx", types.Types[types.TUINT64]),
 	}
 
-	// build iterator struct hswissing the above fields
-	n := ir.NewDeclNameAt(src.NoXPos, ir.OTYPE, ir.Pkgs.Runtime.Lookup("hiter"))
-	hiter := types.NewNamed(n)
-	n.SetType(hiter)
+	// build iterator struct holding the above fields
+	n := ir.NewDeclNameAt(src.NoXPos, ir.OTYPE, ir.Pkgs.InternalMaps.Lookup("Iter"))
+	iter := types.NewNamed(n)
+	n.SetType(iter)
 	n.SetTypecheck(1)
 
-	hiter.SetUnderlying(types.NewStruct(fields))
-	types.CalcSize(hiter)
-	if hiter.Size() != int64(12*types.PtrSize) {
-		base.Fatalf("hash_iter size not correct %d %d", hiter.Size(), 12*types.PtrSize)
+	iter.SetUnderlying(types.NewStruct(fields))
+	types.CalcSize(iter)
+
+	// The size of Iter should be 96 bytes on 64 bit
+	// and 64 bytes on 32 bit platforms.
+	if size := 8*types.PtrSize /* one extra for globalDepth + padding */ + 4*8; iter.Size() != int64(size) {
+		base.Fatalf("internal/runtime/maps.Iter size not correct: got %d, want %d", iter.Size(), size)
 	}
 
-	swissHiterType = hiter
-	return hiter
+	cachedSwissIterType = iter
+	return iter
 }
 
 func writeSwissMapType(t *types.Type, lsym *obj.LSym, c rttype.Cursor) {
 	// internal/abi.SwissMapType
+	gtyp := SwissMapGroupType(t)
 	s1 := writeType(t.Key())
 	s2 := writeType(t.Elem())
-	s3 := writeType(SwissMapBucketType(t))
+	s3 := writeType(gtyp)
 	hasher := genhash(t.Key())
+
+	slotTyp := gtyp.Field(1).Type.Elem()
+	elemOff := slotTyp.Field(1).Offset
 
 	c.Field("Key").WritePtr(s1)
 	c.Field("Elem").WritePtr(s2)
-	c.Field("Bucket").WritePtr(s3)
+	c.Field("Group").WritePtr(s3)
 	c.Field("Hasher").WritePtr(hasher)
+	c.Field("SlotSize").WriteUintptr(uint64(slotTyp.Size()))
+	c.Field("ElemOff").WriteUintptr(uint64(elemOff))
 	var flags uint32
-	// Note: flags must match maptype accessors in ../../../../runtime/type.go
-	// and maptype builder in ../../../../reflect/type.go:MapOf.
-	if t.Key().Size() > abi.SwissMapMaxKeyBytes {
-		c.Field("KeySize").WriteUint8(uint8(types.PtrSize))
-		flags |= 1 // indirect key
-	} else {
-		c.Field("KeySize").WriteUint8(uint8(t.Key().Size()))
-	}
-
-	if t.Elem().Size() > abi.SwissMapMaxElemBytes {
-		c.Field("ValueSize").WriteUint8(uint8(types.PtrSize))
-		flags |= 2 // indirect value
-	} else {
-		c.Field("ValueSize").WriteUint8(uint8(t.Elem().Size()))
-	}
-	c.Field("BucketSize").WriteUint16(uint16(SwissMapBucketType(t).Size()))
-	if types.IsReflexive(t.Key()) {
-		flags |= 4 // reflexive key
-	}
 	if needkeyupdate(t.Key()) {
-		flags |= 8 // need key update
+		flags |= abi.SwissMapNeedKeyUpdate
 	}
 	if hashMightPanic(t.Key()) {
-		flags |= 16 // hash might panic
+		flags |= abi.SwissMapHashMightPanic
+	}
+	if t.Key().Size() > abi.SwissMapMaxKeyBytes {
+		flags |= abi.SwissMapIndirectKey
+	}
+	if t.Elem().Size() > abi.SwissMapMaxKeyBytes {
+		flags |= abi.SwissMapIndirectElem
 	}
 	c.Field("Flags").WriteUint32(flags)
 
@@ -296,8 +298,6 @@ func writeSwissMapType(t *types.Type, lsym *obj.LSym, c rttype.Cursor) {
 		// type live in the binary. This is important to make sure that
 		// a named map and that same map cast to its underlying type via
 		// reflection, use the same hash function. See issue 37716.
-		r := obj.Addrel(lsym)
-		r.Sym = writeType(u)
-		r.Type = objabi.R_KEEP
+		lsym.AddRel(base.Ctxt, obj.Reloc{Type: objabi.R_KEEP, Sym: writeType(u)})
 	}
 }

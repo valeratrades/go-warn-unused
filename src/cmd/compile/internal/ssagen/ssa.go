@@ -89,7 +89,7 @@ func InitConfig() {
 	_ = types.NewPtr(types.Types[types.TINT64])                             // *int64
 	_ = types.NewPtr(types.ErrorType)                                       // *error
 	if buildcfg.Experiment.SwissMap {
-		_ = types.NewPtr(reflectdata.SwissMapType()) // *runtime.hmap
+		_ = types.NewPtr(reflectdata.SwissMapType()) // *internal/runtime/maps.Map
 	} else {
 		_ = types.NewPtr(reflectdata.OldMapType()) // *runtime.hmap
 	}
@@ -102,8 +102,6 @@ func InitConfig() {
 	// Set up some runtime functions we'll need to call.
 	ir.Syms.AssertE2I = typecheck.LookupRuntimeFunc("assertE2I")
 	ir.Syms.AssertE2I2 = typecheck.LookupRuntimeFunc("assertE2I2")
-	ir.Syms.AssertI2I = typecheck.LookupRuntimeFunc("assertI2I")
-	ir.Syms.AssertI2I2 = typecheck.LookupRuntimeFunc("assertI2I2")
 	ir.Syms.CgoCheckMemmove = typecheck.LookupRuntimeFunc("cgoCheckMemmove")
 	ir.Syms.CgoCheckPtrWrite = typecheck.LookupRuntimeFunc("cgoCheckPtrWrite")
 	ir.Syms.CheckPtrAlignment = typecheck.LookupRuntimeFunc("checkptrAlignment")
@@ -147,11 +145,12 @@ func InitConfig() {
 	ir.Syms.TypeAssert = typecheck.LookupRuntimeFunc("typeAssert")
 	ir.Syms.WBZero = typecheck.LookupRuntimeFunc("wbZero")
 	ir.Syms.WBMove = typecheck.LookupRuntimeFunc("wbMove")
-	ir.Syms.X86HasPOPCNT = typecheck.LookupRuntimeVar("x86HasPOPCNT")       // bool
-	ir.Syms.X86HasSSE41 = typecheck.LookupRuntimeVar("x86HasSSE41")         // bool
-	ir.Syms.X86HasFMA = typecheck.LookupRuntimeVar("x86HasFMA")             // bool
-	ir.Syms.ARMHasVFPv4 = typecheck.LookupRuntimeVar("armHasVFPv4")         // bool
-	ir.Syms.ARM64HasATOMICS = typecheck.LookupRuntimeVar("arm64HasATOMICS") // bool
+	ir.Syms.X86HasPOPCNT = typecheck.LookupRuntimeVar("x86HasPOPCNT")         // bool
+	ir.Syms.X86HasSSE41 = typecheck.LookupRuntimeVar("x86HasSSE41")           // bool
+	ir.Syms.X86HasFMA = typecheck.LookupRuntimeVar("x86HasFMA")               // bool
+	ir.Syms.ARMHasVFPv4 = typecheck.LookupRuntimeVar("armHasVFPv4")           // bool
+	ir.Syms.ARM64HasATOMICS = typecheck.LookupRuntimeVar("arm64HasATOMICS")   // bool
+	ir.Syms.Loong64HasLAM_BH = typecheck.LookupRuntimeVar("loong64HasLAM_BH") // bool
 	ir.Syms.Staticuint64s = typecheck.LookupRuntimeVar("staticuint64s")
 	ir.Syms.Typedmemmove = typecheck.LookupRuntimeFunc("typedmemmove")
 	ir.Syms.Udiv = typecheck.LookupRuntimeVar("udiv")                 // asm func with special ABI
@@ -523,7 +522,7 @@ func buildssa(fn *ir.Func, worker int, isPgoHot bool) *ssa.Func {
 	// Populate closure variables.
 	if fn.Needctxt() {
 		clo := s.entryNewValue0(ssa.OpGetClosurePtr, s.f.Config.Types.BytePtr)
-		if fn.RangeParent != nil {
+		if fn.RangeParent != nil && base.Flag.N != 0 {
 			// For a range body closure, keep its closure pointer live on the
 			// stack with a special name, so the debugger can look for it and
 			// find the parent frame.
@@ -3459,10 +3458,6 @@ func (s *state) exprCheckPtr(n ir.Node, checkPtrOK bool) *ssa.Value {
 		n := n.(*ir.CallExpr)
 		return s.newValue1(ssa.OpGetG, n.Type(), s.mem())
 
-	case ir.OGETCALLERPC:
-		n := n.(*ir.CallExpr)
-		return s.newValue0(ssa.OpGetCallerPC, n.Type())
-
 	case ir.OGETCALLERSP:
 		n := n.(*ir.CallExpr)
 		return s.newValue1(ssa.OpGetCallerSP, n.Type(), s.mem())
@@ -3949,7 +3944,7 @@ func (s *state) assignWhichMayOverlap(left ir.Node, right *ssa.Value, deref bool
 			old := s.expr(left.X)
 
 			// Make new structure.
-			new := s.newValue0(ssa.StructMakeOp(t.NumFields()), t)
+			new := s.newValue0(ssa.OpStructMake, t)
 
 			// Add fields as args.
 			for i := 0; i < nf; i++ {
@@ -4077,7 +4072,7 @@ func (s *state) zeroVal(t *types.Type) *ssa.Value {
 		return s.constSlice(t)
 	case t.IsStruct():
 		n := t.NumFields()
-		v := s.entryNewValue0(ssa.StructMakeOp(t.NumFields()), t)
+		v := s.entryNewValue0(ssa.OpStructMake, t)
 		for i := 0; i < n; i++ {
 			v.AddArg(s.zeroVal(t.FieldType(i)))
 		}
@@ -5486,8 +5481,13 @@ func (s *state) referenceTypeBuiltin(n *ir.UnaryExpr, x *ssa.Value) *ssa.Value {
 	s.startBlock(bElse)
 	switch n.Op() {
 	case ir.OLEN:
-		// length is stored in the first word for map/chan
-		s.vars[n] = s.load(lenType, x)
+		if buildcfg.Experiment.SwissMap && n.X.Type().IsMap() {
+			// length is stored in the first word.
+			s.vars[n] = s.load(lenType, x)
+		} else {
+			// length is stored in the first word for map/chan
+			s.vars[n] = s.load(lenType, x)
+		}
 	case ir.OCAP:
 		// capacity is stored in the second word for chan
 		sw := s.newValue1I(ssa.OpOffPtr, lenType.PtrTo(), lenType.Size(), x)

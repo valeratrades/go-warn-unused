@@ -146,10 +146,11 @@
 //		Sets -cover.
 //	-coverpkg pattern1,pattern2,pattern3
 //		For a build that targets package 'main' (e.g. building a Go
-//		executable), apply coverage analysis to each package matching
-//		the patterns. The default is to apply coverage analysis to
-//		packages in the main Go module. See 'go help packages' for a
-//		description of package patterns.  Sets -cover.
+//		executable), apply coverage analysis to each package whose
+//		import path matches the patterns. The default is to apply
+//		coverage analysis to packages in the main Go module. See
+//		'go help packages' for a description of package patterns.
+//		Sets -cover.
 //	-v
 //		print the names of packages as they are compiled.
 //	-work
@@ -665,7 +666,7 @@
 //
 // Usage:
 //
-//	go get [-t] [-u] [-v] [build flags] [packages]
+//	go get [-t] [-u] [-v] [-tool] [build flags] [packages]
 //
 // Get resolves its command-line arguments to packages at specific module versions,
 // updates go.mod to require those versions, and downloads source code into the
@@ -718,6 +719,9 @@
 //
 // When the -t and -u flags are used together, get will update
 // test dependencies as well.
+//
+// The -tool flag instructs go to add a matching tool line to go.mod for each
+// listed package. If -tool is used with @none, the line will be removed.
 //
 // The -x flag prints commands as they are executed. This is useful for
 // debugging version control commands when a module is downloaded directly
@@ -2272,6 +2276,13 @@
 //	GOARCH
 //		The architecture, or processor, for which to compile code.
 //		Examples are amd64, 386, arm, ppc64.
+//	GOAUTH
+//		A semicolon-separated list of authentication commands for go-import and
+//		HTTPS module mirror interactions. Currently supports
+//		"off" (disables authentication),
+//		"netrc" (uses credentials from NETRC or the .netrc file in your home directory),
+//		"git dir" (runs 'git credential fill' in dir and uses its credentials).
+//		The default is netrc.
 //	GOBIN
 //		The directory where 'go install' will install a command.
 //	GOCACHE
@@ -2936,17 +2947,21 @@
 //
 // - "main" denotes the top-level package in a stand-alone executable.
 //
-// - "all" expands to all packages found in all the GOPATH
-// trees. For example, 'go list all' lists all the packages on the local
-// system. When using modules, "all" expands to all packages in
-// the main module and their dependencies, including dependencies
-// needed by tests of any of those.
+// - "all" expands to all packages in the main module (or workspace modules) and
+// their dependencies, including dependencies needed by tests of any of those. In
+// GOPATH mode, "all" expands to all packages found in all the GOPATH trees.
 //
 // - "std" is like all but expands to just the packages in the standard
 // Go library.
 //
 // - "cmd" expands to the Go repository's commands and their
 // internal libraries.
+//
+// Package names match against fully-qualified import paths or patterns that
+// match against any number of import paths. For instance, "fmt" refers to the
+// standard library's package fmt, but "http" alone for package http would not
+// match the import path "net/http" from the standard library. Instead, the
+// complete import path "net/http" must be used.
 //
 // Import paths beginning with "cmd/" only match source code in
 // the Go repository.
@@ -2977,7 +2992,10 @@
 // unique prefix that belongs to you. For example, paths used
 // internally at Google all begin with 'google', and paths
 // denoting remote repositories begin with the path to the code,
-// such as 'github.com/user/repo'.
+// such as 'github.com/user/repo'. Package patterns should include this prefix.
+// For instance, a package called 'http' residing under 'github.com/user/repo',
+// would be addressed with the fully-qualified pattern:
+// 'github.com/user/repo/http'.
 //
 // Packages in a program need not have unique package names,
 // but there are two reserved package names with special meaning.
@@ -3094,10 +3112,10 @@
 //	    Sets -cover.
 //
 //	-coverpkg pattern1,pattern2,pattern3
-//	    Apply coverage analysis in each test to packages matching the patterns.
-//	    The default is for each test to analyze only the package being tested.
-//	    See 'go help packages' for a description of package patterns.
-//	    Sets -cover.
+//	    Apply coverage analysis in each test to packages whose import paths
+//	    match the patterns. The default is for each test to analyze only
+//	    the package being tested. See 'go help packages' for a description
+//	    of package patterns. Sets -cover.
 //
 //	-cpu 1,2,4
 //	    Specify a list of GOMAXPROCS values for which the tests, benchmarks or

@@ -203,8 +203,10 @@ type Dialer struct {
 	// connection but before actually dialing.
 	//
 	// Network and address parameters passed to Control function are not
-	// necessarily the ones passed to Dial. For example, passing "tcp" to Dial
-	// will cause the Control function to be called with "tcp4" or "tcp6".
+	// necessarily the ones passed to Dial. Calling Dial with TCP networks
+	// will cause the Control function to be called with "tcp4" or "tcp6",
+	// UDP networks become "udp4" or "udp6", IP networks become "ip4" or "ip6",
+	// and other known networks are passed as-is.
 	//
 	// Control is ignored if ControlContext is not nil.
 	Control func(network, address string, c syscall.RawConn) error
@@ -213,8 +215,10 @@ type Dialer struct {
 	// connection but before actually dialing.
 	//
 	// Network and address parameters passed to ControlContext function are not
-	// necessarily the ones passed to Dial. For example, passing "tcp" to Dial
-	// will cause the ControlContext function to be called with "tcp4" or "tcp6".
+	// necessarily the ones passed to Dial. Calling Dial with TCP networks
+	// will cause the ControlContext function to be called with "tcp4" or "tcp6",
+	// UDP networks become "udp4" or "udp6", IP networks become "ip4" or "ip6",
+	// and other known networks are passed as-is.
 	//
 	// If ControlContext is not nil, Control is ignored.
 	ControlContext func(ctx context.Context, network, address string, c syscall.RawConn) error
@@ -739,9 +743,11 @@ type ListenConfig struct {
 	// If Control is not nil, it is called after creating the network
 	// connection but before binding it to the operating system.
 	//
-	// Network and address parameters passed to Control method are not
-	// necessarily the ones passed to Listen. For example, passing "tcp" to
-	// Listen will cause the Control function to be called with "tcp4" or "tcp6".
+	// Network and address parameters passed to Control function are not
+	// necessarily the ones passed to Listen. Calling Listen with TCP networks
+	// will cause the Control function to be called with "tcp4" or "tcp6",
+	// UDP networks become "udp4" or "udp6", IP networks become "ip4" or "ip6",
+	// and other known networks are passed as-is.
 	Control func(network, address string, c syscall.RawConn) error
 
 	// KeepAlive specifies the keep-alive period for network
@@ -792,6 +798,9 @@ func (lc *ListenConfig) SetMultipathTCP(use bool) {
 //
 // See func Listen for a description of the network and address
 // parameters.
+//
+// The ctx argument is used while resolving the address on which to listen;
+// it does not affect the returned Listener.
 func (lc *ListenConfig) Listen(ctx context.Context, network, address string) (Listener, error) {
 	addrs, err := DefaultResolver.resolveAddrList(ctx, "listen", network, address, nil)
 	if err != nil {
@@ -826,6 +835,9 @@ func (lc *ListenConfig) Listen(ctx context.Context, network, address string) (Li
 //
 // See func ListenPacket for a description of the network and address
 // parameters.
+//
+// The ctx argument is used while resolving the address on which to listen;
+// it does not affect the returned Listener.
 func (lc *ListenConfig) ListenPacket(ctx context.Context, network, address string) (PacketConn, error) {
 	addrs, err := DefaultResolver.resolveAddrList(ctx, "listen", network, address, nil)
 	if err != nil {

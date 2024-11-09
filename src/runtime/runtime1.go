@@ -680,7 +680,6 @@ func reflect_resolveTypeOff(rtype unsafe.Pointer, off int32) unsafe.Pointer {
 // reflect_resolveTextOff is for package reflect,
 // but widely used packages access it using linkname.
 // Notable members of the hall of shame include:
-//   - github.com/cloudwego/frugal
 //   - github.com/agiledragon/gomonkey/v2
 //
 // Do not remove or change the type signature.
@@ -724,4 +723,14 @@ func reflect_addReflectOff(ptr unsafe.Pointer) int32 {
 	}
 	reflectOffsUnlock()
 	return id
+}
+
+//go:linkname fips_getIndicator crypto/internal/fips.getIndicator
+func fips_getIndicator() uint8 {
+	return getg().fipsIndicator
+}
+
+//go:linkname fips_setIndicator crypto/internal/fips.setIndicator
+func fips_setIndicator(indicator uint8) {
+	getg().fipsIndicator = indicator
 }

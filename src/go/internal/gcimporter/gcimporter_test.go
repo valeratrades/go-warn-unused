@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -287,9 +288,14 @@ func TestVersionHandling(t *testing.T) {
 			// ok to fail if it fails with a no longer supported error for select files
 			if strings.Contains(err.Error(), "no longer supported") {
 				switch name {
-				case "test_go1.7_0.a", "test_go1.7_1.a",
-					"test_go1.8_4.a", "test_go1.8_5.a",
-					"test_go1.11_6b.a", "test_go1.11_999b.a":
+				case "test_go1.7_0.a",
+					"test_go1.7_1.a",
+					"test_go1.8_4.a",
+					"test_go1.8_5.a",
+					"test_go1.11_0i.a",
+					"test_go1.11_6b.a",
+					"test_go1.11_999b.a",
+					"test_go1.11_999i.a":
 					continue
 				}
 				// fall through
@@ -744,4 +750,69 @@ func lookupObj(t *testing.T, scope *types.Scope, name string) types.Object {
 	t.Helper()
 	t.Fatalf("%s not found", name)
 	return nil
+}
+
+// importMap implements the types.Importer interface.
+type importMap map[string]*types.Package
+
+func (m importMap) Import(path string) (*types.Package, error) { return m[path], nil }
+
+func TestIssue69912(t *testing.T) {
+	testenv.MustHaveGoBuild(t)
+
+	// This package only handles gc export data.
+	if runtime.Compiler != "gc" {
+		t.Skipf("gc-built packages not available (compiler = %s)", runtime.Compiler)
+	}
+
+	tmpdir := t.TempDir()
+	testoutdir := filepath.Join(tmpdir, "testdata")
+	if err := os.Mkdir(testoutdir, 0700); err != nil {
+		t.Fatalf("making output dir: %v", err)
+	}
+
+	compile(t, "testdata", "issue69912.go", testoutdir, nil)
+
+	fset := token.NewFileSet()
+
+	issue69912, err := Import(fset, make(map[string]*types.Package), "./testdata/issue69912", tmpdir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	check := func(pkgname, src string, imports importMap) (*types.Package, error) {
+		f, err := parser.ParseFile(fset, "a.go", src, 0)
+		if err != nil {
+			return nil, err
+		}
+		config := &types.Config{
+			Importer: imports,
+		}
+		return config.Check(pkgname, fset, []*ast.File{f}, nil)
+	}
+
+	// Use the resulting package concurrently, via dot-imports, to exercise the
+	// race of issue #69912.
+	const pSrc = `package p
+
+import . "issue69912"
+
+type S struct {
+	f T
+}
+`
+	importer := importMap{
+		"issue69912": issue69912,
+	}
+	var wg sync.WaitGroup
+	for range 10 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := check("p", pSrc, importer); err != nil {
+				t.Errorf("Check failed: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
 }

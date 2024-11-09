@@ -159,6 +159,11 @@ func decodetypeMapValue(ldr *loader.Loader, arch *sys.Arch, symIdx loader.Sym) l
 	return decodeRelocSym(ldr, symIdx, &relocs, int32(commonsize(arch))+int32(arch.PtrSize)) // 0x20 / 0x38
 }
 
+func decodetypeMapSwissGroup(ldr *loader.Loader, arch *sys.Arch, symIdx loader.Sym) loader.Sym {
+	relocs := ldr.Relocs(symIdx)
+	return decodeRelocSym(ldr, symIdx, &relocs, int32(commonsize(arch))+2*int32(arch.PtrSize)) // 0x24 / 0x40
+}
+
 func decodetypePtrElem(ldr *loader.Loader, arch *sys.Arch, symIdx loader.Sym) loader.Sym {
 	relocs := ldr.Relocs(symIdx)
 	return decodeRelocSym(ldr, symIdx, &relocs, int32(commonsize(arch))) // 0x1c / 0x30
@@ -261,7 +266,7 @@ func decodetypeGcprog(ctxt *Link, s loader.Sym) []byte {
 			}
 			return append(progsize, progbytes...)
 		}
-		Exitf("cannot find gcmask for %s", ctxt.loader.SymName(s))
+		Exitf("cannot find gcprog for %s", ctxt.loader.SymName(s))
 		return nil
 	}
 	relocs := ctxt.loader.Relocs(s)

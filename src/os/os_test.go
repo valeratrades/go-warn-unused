@@ -1777,35 +1777,36 @@ func TestSeekError(t *testing.T) {
 	}
 }
 
-type openErrorTest struct {
-	path  string
-	mode  int
-	error error
-}
-
-var openErrorTests = []openErrorTest{
-	{
-		sfdir + "/no-such-file",
-		O_RDONLY,
-		syscall.ENOENT,
-	},
-	{
-		sfdir,
-		O_WRONLY,
-		syscall.EISDIR,
-	},
-	{
-		sfdir + "/" + sfname + "/no-such-file",
-		O_WRONLY,
-		syscall.ENOTDIR,
-	},
-}
-
 func TestOpenError(t *testing.T) {
 	t.Parallel()
 
-	for _, tt := range openErrorTests {
-		f, err := OpenFile(tt.path, tt.mode, 0)
+	dir := t.TempDir()
+	if err := WriteFile(filepath.Join(dir, "is-a-file"), nil, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if err := Mkdir(filepath.Join(dir, "is-a-dir"), 0o777); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tt := range []struct {
+		path  string
+		mode  int
+		error error
+	}{{
+		"no-such-file",
+		O_RDONLY,
+		syscall.ENOENT,
+	}, {
+		"is-a-dir",
+		O_WRONLY,
+		syscall.EISDIR,
+	}, {
+		"is-a-file/no-such-file",
+		O_WRONLY,
+		syscall.ENOTDIR,
+	}} {
+		path := filepath.Join(dir, tt.path)
+		f, err := OpenFile(path, tt.mode, 0)
 		if err == nil {
 			t.Errorf("Open(%q, %d) succeeded", tt.path, tt.mode)
 			f.Close()
@@ -2603,10 +2604,7 @@ func TestRemoveAllRace(t *testing.T) {
 
 	n := runtime.GOMAXPROCS(16)
 	defer runtime.GOMAXPROCS(n)
-	root, err := MkdirTemp("", "issue")
-	if err != nil {
-		t.Fatal(err)
-	}
+	root := t.TempDir()
 	mkdirTree(t, root, 1, 6)
 	hold := make(chan struct{})
 	var wg sync.WaitGroup
@@ -2628,6 +2626,8 @@ func TestRemoveAllRace(t *testing.T) {
 // Test that reading from a pipe doesn't use up a thread.
 func TestPipeThreads(t *testing.T) {
 	switch runtime.GOOS {
+	case "aix":
+		t.Skip("skipping on aix; issue 70131")
 	case "illumos", "solaris":
 		t.Skip("skipping on Solaris and illumos; issue 19111")
 	case "windows":
@@ -2641,11 +2641,6 @@ func TestPipeThreads(t *testing.T) {
 	}
 
 	threads := 100
-
-	// OpenBSD has a low default for max number of files.
-	if runtime.GOOS == "openbsd" {
-		threads = 50
-	}
 
 	r := make([]*File, threads)
 	w := make([]*File, threads)
@@ -3325,24 +3320,7 @@ func TestCopyFS(t *testing.T) {
 	if err := fstest.TestFS(tmpFsys, "a", "b", "dir/x"); err != nil {
 		t.Fatal("TestFS:", err)
 	}
-	if err := fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
-		if d.IsDir() {
-			return nil
-		}
-
-		data, err := fs.ReadFile(fsys, path)
-		if err != nil {
-			return err
-		}
-		newData, err := fs.ReadFile(tmpFsys, path)
-		if err != nil {
-			return err
-		}
-		if !bytes.Equal(data, newData) {
-			return errors.New("file " + path + " contents differ")
-		}
-		return nil
-	}); err != nil {
+	if err := verifyCopyFS(t, fsys, tmpFsys); err != nil {
 		t.Fatal("comparing two directories:", err)
 	}
 
@@ -3371,24 +3349,7 @@ func TestCopyFS(t *testing.T) {
 	if err := fstest.TestFS(tmpFsys, "william", "carl", "daVinci", "einstein", "dir/newton"); err != nil {
 		t.Fatal("TestFS:", err)
 	}
-	if err := fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
-		if d.IsDir() {
-			return nil
-		}
-
-		data, err := fs.ReadFile(fsys, path)
-		if err != nil {
-			return err
-		}
-		newData, err := fs.ReadFile(tmpFsys, path)
-		if err != nil {
-			return err
-		}
-		if !bytes.Equal(data, newData) {
-			return errors.New("file " + path + " contents differ")
-		}
-		return nil
-	}); err != nil {
+	if err := verifyCopyFS(t, fsys, tmpFsys); err != nil {
 		t.Fatal("comparing two directories:", err)
 	}
 
@@ -3401,15 +3362,109 @@ func TestCopyFS(t *testing.T) {
 	}
 }
 
+// verifyCopyFS checks the content and permission of each file inside copied FS to ensure
+// the copied files satisfy the convention stipulated in CopyFS.
+func verifyCopyFS(t *testing.T, originFS, copiedFS fs.FS) error {
+	testDir := filepath.Join(t.TempDir(), "test")
+	// umask doesn't apply to the wasip and windows and there is no general way to get masked perm,
+	// so create a dir and a file to compare the permission after umask if any
+	if err := Mkdir(testDir, ModePerm); err != nil {
+		return fmt.Errorf("mkdir %q failed: %v", testDir, err)
+	}
+	dirStat, err := Stat(testDir)
+	if err != nil {
+		return fmt.Errorf("stat dir %q failed: %v", testDir, err)
+	}
+	wantDirMode := dirStat.Mode()
+
+	f, err := Create(filepath.Join(testDir, "tmp"))
+	if err != nil {
+		return fmt.Errorf("open %q failed: %v", filepath.Join(testDir, "tmp"), err)
+	}
+	defer f.Close()
+	wantFileRWStat, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("stat file %q failed: %v", f.Name(), err)
+	}
+	wantFileRWMode := wantFileRWStat.Mode()
+
+	return fs.WalkDir(originFS, ".", func(path string, d fs.DirEntry, err error) error {
+		if d.IsDir() {
+			// the dir . is not the dir created by CopyFS so skip checking its permission
+			if d.Name() == "." {
+				return nil
+			}
+
+			dinfo, err := fs.Stat(copiedFS, path)
+			if err != nil {
+				return err
+			}
+
+			if dinfo.Mode() != wantDirMode {
+				return fmt.Errorf("dir %q mode is %v, want %v",
+					d.Name(), dinfo.Mode(), wantDirMode)
+			}
+			return nil
+		}
+
+		fInfo, err := originFS.Open(path)
+		if err != nil {
+			return err
+		}
+		defer fInfo.Close()
+		copiedInfo, err := copiedFS.Open(path)
+		if err != nil {
+			return err
+		}
+		defer copiedInfo.Close()
+
+		// verify the file contents are the same
+		data, err := io.ReadAll(fInfo)
+		if err != nil {
+			return err
+		}
+		newData, err := io.ReadAll(copiedInfo)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(data, newData) {
+			return fmt.Errorf("file %q content is %s, want %s", path, newData, data)
+		}
+
+		fStat, err := fInfo.Stat()
+		if err != nil {
+			return err
+		}
+		copiedStat, err := copiedInfo.Stat()
+		if err != nil {
+			return err
+		}
+
+		// check whether the execute permission is inherited from original FS
+
+		if copiedStat.Mode()&0111&wantFileRWMode != fStat.Mode()&0111&wantFileRWMode {
+			return fmt.Errorf("file %q execute mode is %v, want %v",
+				path, copiedStat.Mode()&0111, fStat.Mode()&0111)
+		}
+
+		rwMode := copiedStat.Mode() &^ 0111 // unset the executable permission from file mode
+		if rwMode != wantFileRWMode {
+			return fmt.Errorf("file %q rw mode is %v, want %v",
+				path, rwMode, wantFileRWStat.Mode())
+		}
+		return nil
+	})
+}
+
 func TestCopyFSWithSymlinks(t *testing.T) {
 	// Test it with absolute and relative symlinks that point inside and outside the tree.
 	testenv.MustHaveSymlink(t)
 
 	// Create a directory and file outside.
 	tmpDir := t.TempDir()
-	outsideDir, err := MkdirTemp(tmpDir, "copyfs_out_")
-	if err != nil {
-		t.Fatalf("MkdirTemp: %v", err)
+	outsideDir := filepath.Join(tmpDir, "copyfs_out")
+	if err := Mkdir(outsideDir, 0755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
 	}
 	outsideFile := filepath.Join(outsideDir, "file.out.txt")
 
@@ -3418,9 +3473,9 @@ func TestCopyFSWithSymlinks(t *testing.T) {
 	}
 
 	// Create a directory and file inside.
-	insideDir, err := MkdirTemp(tmpDir, "copyfs_in_")
-	if err != nil {
-		t.Fatalf("MkdirTemp: %v", err)
+	insideDir := filepath.Join(tmpDir, "copyfs_in")
+	if err := Mkdir(insideDir, 0755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
 	}
 	insideFile := filepath.Join(insideDir, "file.in.txt")
 	if err := WriteFile(insideFile, []byte("Testing CopyFS inside"), 0644); err != nil {
@@ -3466,9 +3521,9 @@ func TestCopyFSWithSymlinks(t *testing.T) {
 	// Copy the directory tree and verify.
 	forceMFTUpdateOnWindows(t, insideDir)
 	fsys := DirFS(insideDir)
-	tmpDupDir, err := MkdirTemp(tmpDir, "copyfs_dup_")
-	if err != nil {
-		t.Fatalf("MkdirTemp: %v", err)
+	tmpDupDir := filepath.Join(tmpDir, "copyfs_dup")
+	if err := Mkdir(tmpDupDir, 0755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
 	}
 
 	// TODO(panjf2000): symlinks are currently not supported, and a specific error
@@ -3538,5 +3593,31 @@ func TestCopyFSWithSymlinks(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatal("comparing two directories:", err)
+	}
+}
+
+func TestAppendDoesntOverwrite(t *testing.T) {
+	name := filepath.Join(t.TempDir(), "file")
+	if err := WriteFile(name, []byte("hello"), 0666); err != nil {
+		t.Fatal(err)
+	}
+	f, err := OpenFile(name, O_APPEND|O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write([]byte(" world")); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadFile(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "hello world"
+	if string(got) != want {
+		t.Fatalf("got %q, want %q", got, want)
 	}
 }

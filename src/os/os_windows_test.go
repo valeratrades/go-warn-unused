@@ -931,7 +931,9 @@ func findOneDriveDir() (string, error) {
 		return "", fmt.Errorf("reading UserFolder failed: %v", err)
 	}
 
-	if valtype == registry.EXPAND_SZ {
+	// REG_SZ values may also contain environment variables that need to be expanded.
+	// It's recommended but not required to use REG_EXPAND_SZ for paths that contain environment variables.
+	if valtype == registry.EXPAND_SZ || valtype == registry.SZ {
 		expanded, err := registry.ExpandString(path)
 		if err != nil {
 			return "", fmt.Errorf("expanding UserFolder failed: %v", err)
@@ -990,6 +992,8 @@ func TestFileStatNUL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer f.Close()
+
 	fi, err := f.Stat()
 	if err != nil {
 		t.Fatal(err)
@@ -1015,8 +1019,8 @@ func TestStatNUL(t *testing.T) {
 // works on Windows when developer mode is active.
 // This is supported starting Windows 10 (1703, v10.0.14972).
 func TestSymlinkCreation(t *testing.T) {
-	if !testenv.HasSymlink() && !isWindowsDeveloperModeActive() {
-		t.Skip("Windows developer mode is not active")
+	if !testenv.HasSymlink() {
+		t.Skip("skipping test; no symlink support")
 	}
 	t.Parallel()
 
@@ -1030,23 +1034,6 @@ func TestSymlinkCreation(t *testing.T) {
 	if err := os.Symlink(dummyFile, linkFile); err != nil {
 		t.Fatal(err)
 	}
-}
-
-// isWindowsDeveloperModeActive checks whether or not the developer mode is active on Windows 10.
-// Returns false for prior Windows versions.
-// see https://docs.microsoft.com/en-us/windows/uwp/get-started/enable-your-device-for-development
-func isWindowsDeveloperModeActive() bool {
-	key, err := registry.OpenKey(registry.LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\AppModelUnlock", registry.READ)
-	if err != nil {
-		return false
-	}
-
-	val, _, err := key.GetIntegerValue("AllowDevelopmentWithoutDevLicense")
-	if err != nil {
-		return false
-	}
-
-	return val != 0
 }
 
 // TestRootRelativeDirSymlink verifies that symlinks to paths relative to the
@@ -1269,6 +1256,9 @@ func TestReadlink(t *testing.T) {
 		}
 
 		t.Run(name, func(t *testing.T) {
+			if !tt.junction {
+				testenv.MustHaveSymlink(t)
+			}
 			if !tt.relative {
 				t.Parallel()
 			}
@@ -1571,5 +1561,78 @@ func TestReadDirNoFileID(t *testing.T) {
 	}
 	if !os.SameFile(f2, f2s) {
 		t.Errorf("SameFile(%v, %v) = false; want true", f2, f2s)
+	}
+}
+
+func TestOpen_InvalidPath(t *testing.T) {
+	dir := t.TempDir()
+
+	file, err := os.Open(dir + ".")
+	if err != nil {
+		t.Errorf("Open(%q) should have succeeded, got %v", dir+".", err)
+	} else {
+		file.Close()
+	}
+
+	file, err = os.Open(dir + " ")
+	if err != nil {
+		t.Errorf("Open(%q) should have succeeded, got %v", dir+" ", err)
+	} else {
+		file.Close()
+	}
+}
+
+func TestMkdirAll_InvalidPath(t *testing.T) {
+	// Parent folder contains traling spaces
+	path := `C:\temp\folder \this one fails`
+	err := os.MkdirAll(path, 0644)
+	if err == nil {
+		t.Errorf("MkdirAll(%q) should have failed", path)
+	} else if !strings.Contains(err.Error(), "invalid path: cannot end with a space or period") {
+		t.Errorf("expected errInvalidPath for path %q, got %v", path, err)
+	}
+}
+
+func TestCreate_InvalidPath(t *testing.T) {
+	testInvalidPath(t, func(_, path string) error {
+		_, err := os.Create(path)
+		return err
+	})
+}
+
+func TestMkdir_InvalidPath(t *testing.T) {
+	testInvalidPath(t, func(_, path string) error {
+		return os.Mkdir(path, 0644)
+	})
+}
+
+func TestRename_InvalidPath(t *testing.T) {
+	testInvalidPath(t, os.Rename)
+}
+
+func TestLink_InvalidPath(t *testing.T) {
+	testInvalidPath(t, os.Link)
+}
+
+func TestSymlink_InvalidPath(t *testing.T) {
+	testInvalidPath(t, os.Symlink)
+}
+
+func testInvalidPath(t *testing.T, fn func(src, dest string) error) {
+	dir := t.TempDir()
+
+	// Test invalid paths (with trailing space and period)
+	invalidPaths := []string{
+		filepath.Join(dir, "invalid_dir "), // path ending in space
+		filepath.Join(dir, "invalid_dir."), // path ending in period
+	}
+
+	for _, path := range invalidPaths {
+		err := fn(dir, path)
+		if err == nil {
+			t.Errorf("(%q, %q) should have failed", dir, path)
+		} else if !strings.Contains(err.Error(), "invalid path: cannot end with a space or period") {
+			t.Errorf("expected errInvalidPath for path %q, got %v", path, err)
+		}
 	}
 }

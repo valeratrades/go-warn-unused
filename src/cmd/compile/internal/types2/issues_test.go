@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"internal/testenv"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 	"testing"
 
@@ -164,7 +164,7 @@ L7 uses var z int`
 		fact := fmt.Sprintf("L%d uses %s", id.Pos().Line(), obj)
 		facts = append(facts, fact)
 	}
-	sort.Strings(facts)
+	slices.Sort(facts)
 
 	got := strings.Join(facts, "\n")
 	if got != want {
@@ -729,7 +729,7 @@ var _ I0 = b.S{}
 type S struct{}
 func (S) M0(struct{ f string }) {}
 `,
-			`6:12: cannot use b[.]S{} [(]value of type b[.]S[)] as I0 value in variable declaration: b[.]S does not implement I0 [(]wrong type for method M0[)]
+			`6:12: cannot use b[.]S{} [(]value of struct type b[.]S[)] as I0 value in variable declaration: b[.]S does not implement I0 [(]wrong type for method M0[)]
 .*have M0[(]struct{f string /[*] package b [*]/ }[)]
 .*want M0[(]struct{f string /[*] package main [*]/ }[)]`},
 
@@ -745,7 +745,7 @@ var _ I1 = b.S{}
 type S struct{}
 func (S) M1(struct{ string }) {}
 `,
-			`6:12: cannot use b[.]S{} [(]value of type b[.]S[)] as I1 value in variable declaration: b[.]S does not implement I1 [(]wrong type for method M1[)]
+			`6:12: cannot use b[.]S{} [(]value of struct type b[.]S[)] as I1 value in variable declaration: b[.]S does not implement I1 [(]wrong type for method M1[)]
 .*have M1[(]struct{string /[*] package b [*]/ }[)]
 .*want M1[(]struct{string /[*] package main [*]/ }[)]`},
 
@@ -761,7 +761,7 @@ var _ I2 = b.S{}
 type S struct{}
 func (S) M2(struct{ f struct{ f string } }) {}
 `,
-			`6:12: cannot use b[.]S{} [(]value of type b[.]S[)] as I2 value in variable declaration: b[.]S does not implement I2 [(]wrong type for method M2[)]
+			`6:12: cannot use b[.]S{} [(]value of struct type b[.]S[)] as I2 value in variable declaration: b[.]S does not implement I2 [(]wrong type for method M2[)]
 .*have M2[(]struct{f struct{f string} /[*] package b [*]/ }[)]
 .*want M2[(]struct{f struct{f string} /[*] package main [*]/ }[)]`},
 
@@ -777,7 +777,7 @@ var _ I3 = b.S{}
 type S struct{}
 func (S) M3(struct{ F struct{ f string } }) {}
 `,
-			`6:12: cannot use b[.]S{} [(]value of type b[.]S[)] as I3 value in variable declaration: b[.]S does not implement I3 [(]wrong type for method M3[)]
+			`6:12: cannot use b[.]S{} [(]value of struct type b[.]S[)] as I3 value in variable declaration: b[.]S does not implement I3 [(]wrong type for method M3[)]
 .*have M3[(]struct{F struct{f string /[*] package b [*]/ }}[)]
 .*want M3[(]struct{F struct{f string /[*] package main [*]/ }}[)]`},
 
@@ -793,7 +793,7 @@ var _ I4 = b.S{}
 type S struct{}
 func (S) M4(struct { *string }) {}
 `,
-			`6:12: cannot use b[.]S{} [(]value of type b[.]S[)] as I4 value in variable declaration: b[.]S does not implement I4 [(]wrong type for method M4[)]
+			`6:12: cannot use b[.]S{} [(]value of struct type b[.]S[)] as I4 value in variable declaration: b[.]S does not implement I4 [(]wrong type for method M4[)]
 .*have M4[(]struct{[*]string /[*] package b [*]/ }[)]
 .*want M4[(]struct{[*]string /[*] package main [*]/ }[)]`},
 
@@ -811,7 +811,7 @@ type S struct{}
 type t struct{ A int }
 func (S) M5(struct {S;t}) {}
 `,
-			`7:12: cannot use b[.]S{} [(]value of type b[.]S[)] as I5 value in variable declaration: b[.]S does not implement I5 [(]wrong type for method M5[)]
+			`7:12: cannot use b[.]S{} [(]value of struct type b[.]S[)] as I5 value in variable declaration: b[.]S does not implement I5 [(]wrong type for method M5[)]
 .*have M5[(]struct{b[.]S; b[.]t}[)]
 .*want M5[(]struct{b[.]S; t}[)]`},
 	}
@@ -1139,5 +1139,31 @@ type (
 	const want = "type p.T struct{}"
 	if got != want {
 		t.Errorf("got %s, want %s", got, want)
+	}
+}
+
+func TestIssue69092(t *testing.T) {
+	const src = `
+package p
+
+var _ = T{{x}}
+`
+
+	file := mustParse(src)
+	conf := Config{Error: func(err error) {}} // ignore errors
+	info := Info{Types: make(map[syntax.Expr]TypeAndValue)}
+	conf.Check("p", []*syntax.File{file}, &info)
+
+	// look for {x} expression
+	outer := file.DeclList[0].(*syntax.VarDecl).Values.(*syntax.CompositeLit) // T{{x}}
+	inner := outer.ElemList[0]                                                // {x}
+
+	// type of {x} must have been recorded
+	tv, ok := info.Types[inner]
+	if !ok {
+		t.Fatal("no type found for {x}")
+	}
+	if tv.Type != Typ[Invalid] {
+		t.Fatalf("unexpected type for {x}: %s", tv.Type)
 	}
 }

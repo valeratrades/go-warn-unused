@@ -18,6 +18,7 @@ import (
 	"go/token"
 	"internal/buildcfg"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -82,7 +83,7 @@ func (f *File) offset(p token.Pos) int {
 }
 
 func nameKeys(m map[string]*Name) []string {
-	var ks []string
+	ks := make([]string, 0, len(m))
 	for k := range m {
 		ks = append(ks, k)
 	}
@@ -598,12 +599,8 @@ func (p *Package) Record(f *File) {
 	}
 
 	// merge nocallback & noescape
-	for k, v := range f.NoCallbacks {
-		p.noCallbacks[k] = v
-	}
-	for k, v := range f.NoEscapes {
-		p.noEscapes[k] = v
-	}
+	maps.Copy(p.noCallbacks, f.NoCallbacks)
+	maps.Copy(p.noEscapes, f.NoEscapes)
 
 	if f.ExpFunc != nil {
 		p.ExpFunc = append(p.ExpFunc, f.ExpFunc...)

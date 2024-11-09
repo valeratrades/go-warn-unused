@@ -1215,7 +1215,7 @@ func addstrdata(arch *sys.Arch, l *loader.Loader, name, value string) {
 	if goType := l.SymGoType(s); goType == 0 {
 		return
 	} else if typeName := l.SymName(goType); typeName != "type:string" {
-		Errorf(nil, "%s: cannot set with -X: not a var of type string (%s)", name, typeName)
+		Errorf("%s: cannot set with -X: not a var of type string (%s)", name, typeName)
 		return
 	}
 	if !l.AttrReachable(s) {
@@ -1376,7 +1376,7 @@ const cutoff = 2e9 // 2 GB (or so; looks better in errors than 2^31)
 // check accumulated size of data sections
 func (state *dodataState) checkdatsize(symn sym.SymKind) {
 	if state.datsize > cutoff {
-		Errorf(nil, "too much data, last section %v (%d, over %v bytes)", symn, state.datsize, cutoff)
+		Errorf("too much data, last section %v (%d, over %v bytes)", symn, state.datsize, cutoff)
 	}
 }
 
@@ -1385,7 +1385,7 @@ func checkSectSize(sect *sym.Section) {
 	// make sure we generate unsigned offset in relocations and check
 	// for overflow.
 	if sect.Length > cutoff {
-		Errorf(nil, "too much data in section %s (%d, over %v bytes)", sect.Name, sect.Length, cutoff)
+		Errorf("too much data in section %s (%d, over %v bytes)", sect.Name, sect.Length, cutoff)
 	}
 }
 
@@ -1876,7 +1876,7 @@ func (state *dodataState) allocateDataSections(ctxt *Link) {
 
 	if ctxt.HeadType == objabi.Haix {
 		if len(state.data[sym.SINITARR]) > 0 {
-			Errorf(nil, "XCOFF format doesn't allow .init_array section")
+			Errorf("XCOFF format doesn't allow .init_array section")
 		}
 	}
 
@@ -1995,7 +1995,7 @@ func (state *dodataState) allocateDataSections(ctxt *Link) {
 	/* read-only executable ELF, Mach-O sections */
 	if len(state.data[sym.STEXT]) != 0 {
 		culprit := ldr.SymName(state.data[sym.STEXT][0])
-		Errorf(nil, "dodata found an sym.STEXT symbol: %s", culprit)
+		Errorf("dodata found an sym.STEXT symbol: %s", culprit)
 	}
 	state.allocateSingleSymSections(&Segtext, sym.SELFRXSECT, sym.SRODATA, 05)
 	state.allocateSingleSymSections(&Segtext, sym.SMACHOPLT, sym.SRODATA, 05)
@@ -2161,7 +2161,7 @@ func (state *dodataState) allocateDataSections(ctxt *Link) {
 
 	// 6g uses 4-byte relocation offsets, so the entire segment must fit in 32 bits.
 	if state.datsize != int64(uint32(state.datsize)) {
-		Errorf(nil, "read-only data segment too large: %d", state.datsize)
+		Errorf("read-only data segment too large: %d", state.datsize)
 	}
 
 	siz := 0
@@ -2240,12 +2240,12 @@ func (state *dodataState) dodataSect(ctxt *Link, symn sym.SymKind, syms []loader
 	// from input files. Both are type sym.SELFGOT, so in that case
 	// we skip size comparison and do the name comparison instead
 	// (conveniently, .got sorts before .toc).
-	checkSize := symn != sym.SELFGOT
+	sortBySize := symn != sym.SELFGOT
 
 	for k, s := range syms {
 		ss := ldr.SymSize(s)
 		sl[k] = symNameSize{sz: ss, sym: s}
-		if !checkSize {
+		if !sortBySize {
 			sl[k].name = ldr.SymName(s)
 		}
 		ds := int64(len(ldr.Data(s)))
@@ -2286,15 +2286,16 @@ func (state *dodataState) dodataSect(ctxt *Link, symn sym.SymKind, syms []loader
 				return true
 			case sj == head, si == tail:
 				return false
-			// put zerobase right after all the zero-sized symbols,
-			// so zero-sized symbols have the same address as zerobase.
-			case si == zerobase:
-				return jsz != 0 // zerobase < nonzero-sized
-			case sj == zerobase:
-				return isz == 0 // 0-sized < zerobase
 			}
-			if checkSize {
-				if isz != jsz {
+			if sortBySize {
+				switch {
+				// put zerobase right after all the zero-sized symbols,
+				// so zero-sized symbols have the same address as zerobase.
+				case si == zerobase:
+					return jsz != 0 // zerobase < nonzero-sized, zerobase > zero-sized
+				case sj == zerobase:
+					return isz == 0 // 0-sized < zerobase, nonzero-sized > zerobase
+				case isz != jsz:
 					return isz < jsz
 				}
 			} else {
@@ -2304,7 +2305,7 @@ func (state *dodataState) dodataSect(ctxt *Link, symn sym.SymKind, syms []loader
 					return iname < jname
 				}
 			}
-			return si < sj
+			return si < sj // break ties by symbol number
 		})
 	} else {
 		// PCLNTAB was built internally, and already has the proper order.
@@ -2981,6 +2982,12 @@ func (ctxt *Link) address() []*sym.Segment {
 	ctxt.xdefine("runtime.end", sym.SBSS, int64(Segdata.Vaddr+Segdata.Length))
 
 	if fuzzCounters != nil {
+		if *flagAsan {
+			// ASAN requires that the symbol marking the end
+			// of the section be aligned on an 8 byte boundary.
+			// See issue #66966.
+			fuzzCounters.Length = uint64(Rnd(int64(fuzzCounters.Length), 8))
+		}
 		ctxt.xdefine("runtime.__start___sancov_cntrs", sym.SLIBFUZZER_8BIT_COUNTER, int64(fuzzCounters.Vaddr))
 		ctxt.xdefine("runtime.__stop___sancov_cntrs", sym.SLIBFUZZER_8BIT_COUNTER, int64(fuzzCounters.Vaddr+fuzzCounters.Length))
 		ctxt.xdefine("internal/fuzz._counters", sym.SLIBFUZZER_8BIT_COUNTER, int64(fuzzCounters.Vaddr))

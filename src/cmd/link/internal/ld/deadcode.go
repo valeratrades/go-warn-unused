@@ -50,7 +50,7 @@ func (d *deadcodePass) init() {
 		n := d.ldr.NDef()
 		for i := 1; i < n; i++ {
 			s := loader.Sym(i)
-			if d.ldr.SymType(s) == sym.STEXT && d.ldr.SymSize(s) == 0 {
+			if d.ldr.SymType(s).IsText() && d.ldr.SymSize(s) == 0 {
 				// Zero-sized text symbol is a function deadcoded by the
 				// compiler. It doesn't really get compiled, and its
 				// metadata may be missing.
@@ -561,7 +561,10 @@ func (d *deadcodePass) decodetypeMethods(ldr *loader.Loader, arch *sys.Arch, sym
 		off += 2 * arch.PtrSize
 	case abi.Map:
 		if buildcfg.Experiment.SwissMap {
-			off += 4*arch.PtrSize + 8 // internal/abi.SwissMapType
+			off += 6*arch.PtrSize + 4 // internal/abi.SwissMapType
+			if arch.PtrSize == 8 {
+				off += 4 // padding for final uint32 field (Flags).
+			}
 		} else {
 			off += 4*arch.PtrSize + 8 // internal/abi.OldMapType
 		}

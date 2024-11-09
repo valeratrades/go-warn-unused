@@ -7,24 +7,38 @@
 package runtime
 
 import (
+	"internal/abi"
+	"internal/runtime/maps"
 	"unsafe"
 )
 
-func mapaccess1_faststr(t *maptype, h *hmap, ky string) unsafe.Pointer {
-	throw("mapaccess1_faststr unimplemented")
-	panic("unreachable")
-}
+// Functions below pushed from internal/runtime/maps.
 
-func mapaccess2_faststr(t *maptype, h *hmap, ky string) (unsafe.Pointer, bool) {
-	throw("mapaccess2_faststr unimplemented")
-	panic("unreachable")
-}
+//go:linkname mapaccess1_faststr
+func mapaccess1_faststr(t *abi.SwissMapType, m *maps.Map, ky string) unsafe.Pointer
 
-func mapassign_faststr(t *maptype, h *hmap, s string) unsafe.Pointer {
-	throw("mapassign_faststr unimplemented")
-	panic("unreachable")
-}
+// mapaccess2_faststr should be an internal detail,
+// but widely used packages access it using linkname.
+// Notable members of the hall of shame include:
+//   - github.com/ugorji/go/codec
+//
+// Do not remove or change the type signature.
+// See go.dev/issue/67401.
+//
+//go:linkname mapaccess2_faststr
+func mapaccess2_faststr(t *abi.SwissMapType, m *maps.Map, ky string) (unsafe.Pointer, bool)
 
-func mapdelete_faststr(t *maptype, h *hmap, ky string) {
-	throw("mapdelete_faststr unimplemented")
-}
+// mapassign_faststr should be an internal detail,
+// but widely used packages access it using linkname.
+// Notable members of the hall of shame include:
+//   - github.com/bytedance/sonic
+//   - github.com/ugorji/go/codec
+//
+// Do not remove or change the type signature.
+// See go.dev/issue/67401.
+//
+//go:linkname mapassign_faststr
+func mapassign_faststr(t *abi.SwissMapType, m *maps.Map, s string) unsafe.Pointer
+
+//go:linkname mapdelete_faststr
+func mapdelete_faststr(t *abi.SwissMapType, m *maps.Map, ky string)

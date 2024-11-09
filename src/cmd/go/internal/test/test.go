@@ -235,10 +235,10 @@ control the execution of any test:
 	    Sets -cover.
 
 	-coverpkg pattern1,pattern2,pattern3
-	    Apply coverage analysis in each test to packages matching the patterns.
-	    The default is for each test to analyze only the package being tested.
-	    See 'go help packages' for a description of package patterns.
-	    Sets -cover.
+	    Apply coverage analysis in each test to packages whose import paths
+	    match the patterns. The default is for each test to analyze only
+	    the package being tested. See 'go help packages' for a description
+	    of package patterns. Sets -cover.
 
 	-cpu 1,2,4
 	    Specify a list of GOMAXPROCS values for which the tests, benchmarks or
@@ -929,15 +929,16 @@ func runTest(ctx context.Context, cmd *base.Command, args []string) {
 		// unlikely to be useful. Most of these are used by the testing or
 		// internal/fuzz packages concurrently with fuzzing.
 		var skipInstrumentation = map[string]bool{
-			"context":       true,
-			"internal/fuzz": true,
-			"reflect":       true,
-			"runtime":       true,
-			"sync":          true,
-			"sync/atomic":   true,
-			"syscall":       true,
-			"testing":       true,
-			"time":          true,
+			"context":               true,
+			"internal/fuzz":         true,
+			"internal/runtime/maps": true,
+			"reflect":               true,
+			"runtime":               true,
+			"sync":                  true,
+			"sync/atomic":           true,
+			"syscall":               true,
+			"testing":               true,
+			"time":                  true,
 		}
 		for _, p := range load.TestPackageList(ctx, pkgOpts, pkgs) {
 			if !skipInstrumentation[p.ImportPath] {

@@ -4,7 +4,10 @@
 
 package runtime
 
-import "unsafe"
+import (
+	"internal/runtime/sys"
+	"unsafe"
+)
 
 // A coro represents extra concurrency without extra parallelism,
 // as would be needed for a coroutine implementation.
@@ -39,7 +42,7 @@ type coro struct {
 func newcoro(f func(*coro)) *coro {
 	c := new(coro)
 	c.f = f
-	pc := getcallerpc()
+	pc := sys.GetCallerPC()
 	gp := getg()
 	systemstack(func() {
 		mp := gp.m
@@ -208,6 +211,18 @@ func coroswitch_m(gp *g) {
 	// directly if possible.
 	setGNoWB(&mp.curg, gnext)
 	setMNoWB(&gnext.m, mp)
+
+	// Synchronize with any out-standing goroutine profile. We're about to start
+	// executing, and an invariant of the profiler is that we tryRecordGoroutineProfile
+	// whenever a goroutine is about to start running.
+	//
+	// N.B. We must do this before transitioning to _Grunning but after installing gnext
+	// in curg, so that we have a valid curg for allocation (tryRecordGoroutineProfile
+	// may allocate).
+	if goroutineProfile.active {
+		tryRecordGoroutineProfile(gnext, nil, osyield)
+	}
+
 	if !gnext.atomicstatus.CompareAndSwap(_Gwaiting, _Grunning) {
 		// The CAS failed: use casgstatus, which will take care of
 		// coordinating with the garbage collector about the state change.

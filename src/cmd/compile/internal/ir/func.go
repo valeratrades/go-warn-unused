@@ -51,6 +51,8 @@ import (
 // the generated ODCLFUNC, but there is no
 // pointer from the Func back to the OMETHVALUE.
 type Func struct {
+	// if you add or remove a field, don't forget to update sizeof_test.go
+
 	miniNode
 	Body Nodes
 
@@ -75,6 +77,9 @@ type Func struct {
 	// Enclosed functions that need to be compiled.
 	// Populated during walk.
 	Closures []*Func
+
+	// Parent of a closure
+	ClosureParent *Func
 
 	// Parents records the parent scope of each scope within a
 	// function. The root scope (0) has no parent, so the i'th
@@ -282,12 +287,12 @@ func (f *Func) SetWBPos(pos src.XPos) {
 	}
 }
 
+// IsClosure reports whether f is a function literal that captures at least one value.
 func (f *Func) IsClosure() bool {
 	if f.OClosure == nil {
 		return false
 	}
-	// Trivial closure will be converted to global.
-	return !IsTrivialClosure(f.OClosure)
+	return len(f.ClosureVars) > 0
 }
 
 // FuncName returns the name (without the package) of the function f.
@@ -419,12 +424,6 @@ func ClosureDebugRuntimeCheck(clo *ClosureExpr) {
 	}
 }
 
-// IsTrivialClosure reports whether closure clo has an
-// empty list of captured vars.
-func IsTrivialClosure(clo *ClosureExpr) bool {
-	return len(clo.Func.ClosureVars) == 0
-}
-
 // globClosgen is like Func.Closgen, but for the global scope.
 var globClosgen int32
 
@@ -522,6 +521,7 @@ func NewClosureFunc(fpos, cpos src.XPos, why Op, typ *types.Type, outerfn *Func,
 
 	fn.Nname.Defn = fn
 	pkg.Funcs = append(pkg.Funcs, fn)
+	fn.ClosureParent = outerfn
 
 	return fn
 }

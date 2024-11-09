@@ -365,9 +365,8 @@ func writeTableSec(ctxt *ld.Link, fns []*wasmFunc) {
 func writeMemorySec(ctxt *ld.Link, ldr *loader.Loader) {
 	sizeOffset := writeSecHeader(ctxt, sectionMemory)
 
-	dataSection := ldr.SymSect(ldr.Lookup("runtime.data", 0))
-	dataEnd := dataSection.Vaddr + dataSection.Length
-	var initialSize = dataEnd + 16<<20 // 16MB, enough for runtime init without growing
+	dataEnd := uint64(ldr.SymValue(ldr.Lookup("runtime.end", 0)))
+	var initialSize = dataEnd + 1<<20 // 1 MB, for runtime init allocating a few pages
 
 	const wasmPageSize = 64 << 10 // 64KB
 
@@ -430,7 +429,7 @@ func writeExportSec(ctxt *ld.Link, ldr *loader.Loader, lenHostImports int) {
 		}
 		s := ldr.Lookup(entry, 0)
 		if s == 0 {
-			ld.Errorf(nil, "export symbol %s not defined", entry)
+			ld.Errorf("export symbol %s not defined", entry)
 		}
 		idx := uint32(lenHostImports) + uint32(ldr.SymValue(s)>>16) - funcValueOffset
 		writeName(ctxt.Out, entryExpName)   // the wasi entrypoint
@@ -450,7 +449,7 @@ func writeExportSec(ctxt *ld.Link, ldr *loader.Loader, lenHostImports int) {
 		for _, name := range []string{"run", "resume", "getsp"} {
 			s := ldr.Lookup("wasm_export_"+name, 0)
 			if s == 0 {
-				ld.Errorf(nil, "export symbol %s not defined", "wasm_export_"+name)
+				ld.Errorf("export symbol %s not defined", "wasm_export_"+name)
 			}
 			idx := uint32(lenHostImports) + uint32(ldr.SymValue(s)>>16) - funcValueOffset
 			writeName(ctxt.Out, name)           // inst.exports.run/resume/getsp in wasm_exec.js

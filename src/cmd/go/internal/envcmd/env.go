@@ -80,6 +80,7 @@ func MkEnv() []cfg.EnvVar {
 	env := []cfg.EnvVar{
 		{Name: "GO111MODULE", Value: cfg.Getenv("GO111MODULE")},
 		{Name: "GOARCH", Value: cfg.Goarch, Changed: cfg.Goarch != runtime.GOARCH},
+		{Name: "GOAUTH", Value: cfg.GOAUTH, Changed: cfg.GOAUTHChanged},
 		{Name: "GOBIN", Value: cfg.GOBIN},
 		{Name: "GOCACHE"},
 		{Name: "GOENV", Value: envFile, Changed: envFileChanged},
@@ -249,7 +250,7 @@ func ExtraEnvVarsCostly() []cfg.EnvVar {
 			ev.Changed = ev.Value != ""
 		case "PKG_CONFIG":
 			ev.Changed = ev.Value != cfg.DefaultPkgConfig
-		case "CGO_CXXFLAGS", "CGO_CFLAGS", "CGO_FFLAGS", "GGO_LDFLAGS":
+		case "CGO_CXXFLAGS", "CGO_CFLAGS", "CGO_FFLAGS", "CGO_LDFLAGS":
 			ev.Changed = ev.Value != work.DefaultCFlags
 		}
 	}
@@ -339,7 +340,7 @@ func runEnv(ctx context.Context, cmd *base.Command, args []string) {
 		// Show only the named vars.
 		if !*envChanged {
 			if *envJson {
-				var es []cfg.EnvVar
+				es := make([]cfg.EnvVar, 0, len(args))
 				for _, name := range args {
 					e := cfg.EnvVar{Name: name, Value: findEnv(env, name)}
 					es = append(es, e)
