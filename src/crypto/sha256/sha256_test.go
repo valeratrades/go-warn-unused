@@ -8,12 +8,10 @@ package sha256
 
 import (
 	"bytes"
-	"crypto/internal/boring"
 	"crypto/internal/cryptotest"
 	"encoding"
 	"fmt"
 	"hash"
-	"internal/testenv"
 	"io"
 	"testing"
 )
@@ -93,7 +91,7 @@ var golden224 = []sha256Test{
 }
 
 func TestGolden(t *testing.T) {
-	cryptotest.TestAllImplementations(t, "crypto/sha256", testGolden)
+	cryptotest.TestAllImplementations(t, "sha256", testGolden)
 }
 
 func testGolden(t *testing.T) {
@@ -142,7 +140,7 @@ func testGolden(t *testing.T) {
 }
 
 func TestGoldenMarshal(t *testing.T) {
-	cryptotest.TestAllImplementations(t, "crypto/sha256", testGoldenMarshal)
+	cryptotest.TestAllImplementations(t, "sha256", testGoldenMarshal)
 }
 
 func testGoldenMarshal(t *testing.T) {
@@ -298,10 +296,7 @@ func TestLargeHashes(t *testing.T) {
 }
 
 func TestAllocations(t *testing.T) {
-	testenv.SkipIfOptimizationOff(t)
-	if boring.Enabled {
-		t.Skip("BoringCrypto doesn't allocate the same way as stdlib")
-	}
+	cryptotest.SkipTestAllocations(t)
 	if n := testing.AllocsPerRun(10, func() {
 		in := []byte("hello, world!")
 		out := make([]byte, 0, Size)
@@ -336,6 +331,7 @@ func TestCgo(t *testing.T) {
 	// The scan (if any) should be limited to the [16]byte.
 	d := new(cgoData)
 	d.Ptr = d
+	_ = d.Ptr // for unusedwrite check
 	h := New()
 	h.Write(d.Data[:])
 	h.Sum(nil)
@@ -343,12 +339,12 @@ func TestCgo(t *testing.T) {
 
 func TestHash(t *testing.T) {
 	t.Run("SHA-224", func(t *testing.T) {
-		cryptotest.TestAllImplementations(t, "crypto/sha256", func(t *testing.T) {
+		cryptotest.TestAllImplementations(t, "sha256", func(t *testing.T) {
 			cryptotest.TestHash(t, New224)
 		})
 	})
 	t.Run("SHA-256", func(t *testing.T) {
-		cryptotest.TestAllImplementations(t, "crypto/sha256", func(t *testing.T) {
+		cryptotest.TestAllImplementations(t, "sha256", func(t *testing.T) {
 			cryptotest.TestHash(t, New)
 		})
 	})

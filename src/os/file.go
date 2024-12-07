@@ -305,18 +305,25 @@ func (f *File) WriteString(s string) (n int, err error) {
 // bits (before umask).
 // If there is an error, it will be of type *PathError.
 func Mkdir(name string, perm FileMode) error {
-	err := mkdir(name, perm)
-	if err != nil {
-		return &PathError{Op: "mkdir", Path: name, Err: err}
+	longName := fixLongPath(name)
+	e := ignoringEINTR(func() error {
+		return syscall.Mkdir(longName, syscallMode(perm))
+	})
+
+	if e != nil {
+		return &PathError{Op: "mkdir", Path: name, Err: e}
 	}
+
 	// mkdir(2) itself won't handle the sticky bit on *BSD and Solaris
 	if !supportsCreateWithStickyBit && perm&ModeSticky != 0 {
-		err = setStickyBit(name)
-		if err != nil {
+		e = setStickyBit(name)
+
+		if e != nil {
 			Remove(name)
-			return err
+			return e
 		}
 	}
+
 	return nil
 }
 
@@ -390,6 +397,8 @@ func OpenFile(name string, flag int, perm FileMode) (*File, error) {
 
 	return f, nil
 }
+
+var errPathEscapes = errors.New("path escapes from parent")
 
 // openDir opens a file which is assumed to be a directory. As such, it skips
 // the syscalls that make the file descriptor non-blocking as these take time
@@ -687,6 +696,8 @@ func (f *File) SyscallConn() (syscall.RawConn, error) {
 // a general substitute for a chroot-style security mechanism when the directory tree
 // contains arbitrary content.
 //
+// Use [Root.FS] to obtain a fs.FS that prevents escapes from the tree via symbolic links.
+//
 // The directory dir must not be "".
 //
 // The result implements [io/fs.StatFS], [io/fs.ReadFileFS] and
@@ -791,7 +802,10 @@ func ReadFile(name string) ([]byte, error) {
 		return nil, err
 	}
 	defer f.Close()
+	return readFileContents(f)
+}
 
+func readFileContents(f *File) ([]byte, error) {
 	var size int
 	if info, err := f.Stat(); err == nil {
 		size64 := info.Size()

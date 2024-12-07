@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -78,11 +79,13 @@ var (
 func MkEnv() []cfg.EnvVar {
 	envFile, envFileChanged, _ := cfg.EnvFile()
 	env := []cfg.EnvVar{
+		// NOTE: Keep this list (and in general, all lists in source code) sorted by name.
 		{Name: "GO111MODULE", Value: cfg.Getenv("GO111MODULE")},
 		{Name: "GOARCH", Value: cfg.Goarch, Changed: cfg.Goarch != runtime.GOARCH},
 		{Name: "GOAUTH", Value: cfg.GOAUTH, Changed: cfg.GOAUTHChanged},
 		{Name: "GOBIN", Value: cfg.GOBIN},
 		{Name: "GOCACHE"},
+		{Name: "GODEBUG", Value: os.Getenv("GODEBUG")},
 		{Name: "GOENV", Value: envFile, Changed: envFileChanged},
 		{Name: "GOEXE", Value: cfg.ExeSuffix},
 
@@ -93,6 +96,7 @@ func MkEnv() []cfg.EnvVar {
 		// a different version (for example, when bisecting a regression).
 		{Name: "GOEXPERIMENT", Value: cfg.RawGOEXPERIMENT},
 
+		{Name: "GOFIPS140", Value: cfg.GOFIPS140, Changed: cfg.GOFIPS140Changed},
 		{Name: "GOFLAGS", Value: cfg.Getenv("GOFLAGS")},
 		{Name: "GOHOSTARCH", Value: runtime.GOARCH},
 		{Name: "GOHOSTOS", Value: runtime.GOOS},
@@ -106,14 +110,13 @@ func MkEnv() []cfg.EnvVar {
 		{Name: "GOPROXY", Value: cfg.GOPROXY, Changed: cfg.GOPROXYChanged},
 		{Name: "GOROOT", Value: cfg.GOROOT},
 		{Name: "GOSUMDB", Value: cfg.GOSUMDB, Changed: cfg.GOSUMDBChanged},
+		{Name: "GOTELEMETRY", Value: telemetry.Mode()},
+		{Name: "GOTELEMETRYDIR", Value: telemetry.Dir()},
 		{Name: "GOTMPDIR", Value: cfg.Getenv("GOTMPDIR")},
 		{Name: "GOTOOLCHAIN"},
 		{Name: "GOTOOLDIR", Value: build.ToolDir},
 		{Name: "GOVCS", Value: cfg.GOVCS},
 		{Name: "GOVERSION", Value: runtime.Version()},
-		{Name: "GODEBUG", Value: os.Getenv("GODEBUG")},
-		{Name: "GOTELEMETRY", Value: telemetry.Mode()},
-		{Name: "GOTELEMETRYDIR", Value: telemetry.Dir()},
 	}
 
 	for i := range env {
@@ -304,7 +307,7 @@ func runEnv(ctx context.Context, cmd *base.Command, args []string) {
 	env := cfg.CmdEnv
 	env = append(env, ExtraEnvVars()...)
 
-	if err := fsys.Init(base.Cwd()); err != nil {
+	if err := fsys.Init(); err != nil {
 		base.Fatal(err)
 	}
 
@@ -480,6 +483,9 @@ func checkBuildConfig(add map[string]string, del map[string]bool) error {
 
 // PrintEnv prints the environment variables to w.
 func PrintEnv(w io.Writer, env []cfg.EnvVar, onlyChanged bool) {
+	env = slices.Clone(env)
+	slices.SortFunc(env, func(x, y cfg.EnvVar) int { return strings.Compare(x.Name, y.Name) })
+
 	for _, e := range env {
 		if e.Name != "TERM" {
 			if runtime.GOOS != "plan9" && bytes.Contains([]byte(e.Value), []byte{0}) {

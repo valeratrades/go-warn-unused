@@ -129,7 +129,7 @@ func trampoline(ctxt *Link, s loader.Sym) {
 			// don't randomize the function order).
 			// Except that if SymPkg(s) == "", it is a host object symbol
 			// which may call an external symbol via PLT.
-			if ldr.SymPkg(s) != "" && ldr.SymPkg(rs) == ldr.SymPkg(s) && *flagRandLayout == 0 {
+			if ldr.SymPkg(s) != "" && ldr.SymPkg(rs) == ldr.SymPkg(s) && ldr.SymType(rs) == ldr.SymType(s) && *flagRandLayout == 0 {
 				// RISC-V is only able to reach +/-1MiB via a JAL instruction.
 				// We need to generate a trampoline when an address is
 				// currently unknown.
@@ -1078,6 +1078,7 @@ func writeBlock(ctxt *Link, out *OutBuf, ldr *loader.Loader, syms []loader.Sym, 
 	// is the virtual address. DWARF compression changes file sizes,
 	// so dwarfcompress will fix this up later if necessary.
 	eaddr := addr + size
+	var prev loader.Sym
 	for _, s := range syms {
 		if ldr.AttrSubSymbol(s) {
 			continue
@@ -1087,9 +1088,10 @@ func writeBlock(ctxt *Link, out *OutBuf, ldr *loader.Loader, syms []loader.Sym, 
 			break
 		}
 		if val < addr {
-			ldr.Errorf(s, "phase error: addr=%#x but val=%#x sym=%s type=%v sect=%v sect.addr=%#x", addr, val, ldr.SymName(s), ldr.SymType(s), ldr.SymSect(s).Name, ldr.SymSect(s).Vaddr)
+			ldr.Errorf(s, "phase error: addr=%#x but val=%#x sym=%s type=%v sect=%v sect.addr=%#x prev=%s", addr, val, ldr.SymName(s), ldr.SymType(s), ldr.SymSect(s).Name, ldr.SymSect(s).Vaddr, ldr.SymName(prev))
 			errorexit()
 		}
+		prev = s
 		if addr < val {
 			out.WriteStringPad("", int(val-addr), pad)
 			addr = val
@@ -1333,7 +1335,7 @@ func (p *GCProg) AddSym(s loader.Sym) {
 	// everything we see should have pointers and should therefore have a type.
 	if typ == 0 {
 		switch ldr.SymName(s) {
-		case "runtime.data", "runtime.edata", "runtime.bss", "runtime.ebss":
+		case "runtime.data", "runtime.edata", "runtime.bss", "runtime.ebss", "runtime.gcdata", "runtime.gcbss":
 			// Ignore special symbols that are sometimes laid out
 			// as real symbols. See comment about dyld on darwin in
 			// the address function.
@@ -1343,30 +1345,62 @@ func (p *GCProg) AddSym(s loader.Sym) {
 		return
 	}
 
-	ptrsize := int64(p.ctxt.Arch.PtrSize)
-	typData := ldr.Data(typ)
-	nptr := decodetypePtrdata(p.ctxt.Arch, typData) / ptrsize
-
 	if debugGCProg {
-		fmt.Fprintf(os.Stderr, "gcprog sym: %s at %d (ptr=%d+%d)\n", ldr.SymName(s), ldr.SymValue(s), ldr.SymValue(s)/ptrsize, nptr)
+		fmt.Fprintf(os.Stderr, "gcprog sym: %s at %d (ptr=%d)\n", ldr.SymName(s), ldr.SymValue(s), ldr.SymValue(s)/int64(p.ctxt.Arch.PtrSize))
 	}
 
 	sval := ldr.SymValue(s)
-	if !decodetypeUsegcprog(p.ctxt.Arch, typData) {
+	p.AddType(sval, typ)
+}
+
+// Add to the gc program the ptr bits for the type typ at
+// byte offset off in the region being described.
+// The type must have a pointer in it.
+func (p *GCProg) AddType(off int64, typ loader.Sym) {
+	ldr := p.ctxt.loader
+	typData := ldr.Data(typ)
+	ptrdata := decodetypePtrdata(p.ctxt.Arch, typData)
+	if ptrdata == 0 {
+		p.ctxt.Errorf(p.sym.Sym(), "has no pointers but in data section")
+		// TODO: just skip these? They might occur in assembly
+		// that doesn't know to use NOPTR? But there must have been
+		// a Go declaration somewhere.
+	}
+	switch decodetypeKind(p.ctxt.Arch, typData) {
+	default:
+		if decodetypeGCMaskOnDemand(p.ctxt.Arch, typData) {
+			p.ctxt.Errorf(p.sym.Sym(), "GC mask not available")
+		}
 		// Copy pointers from mask into program.
+		ptrsize := int64(p.ctxt.Arch.PtrSize)
 		mask := decodetypeGcmask(p.ctxt, typ)
-		for i := int64(0); i < nptr; i++ {
+		for i := int64(0); i < ptrdata/ptrsize; i++ {
 			if (mask[i/8]>>uint(i%8))&1 != 0 {
-				p.w.Ptr(sval/ptrsize + i)
+				p.w.Ptr(off/ptrsize + i)
 			}
 		}
-		return
+	case abi.Array:
+		elem := decodetypeArrayElem(p.ctxt, p.ctxt.Arch, typ)
+		n := decodetypeArrayLen(ldr, p.ctxt.Arch, typ)
+		p.AddType(off, elem)
+		if n > 1 {
+			// Issue repeat for subsequent n-1 instances.
+			elemSize := decodetypeSize(p.ctxt.Arch, ldr.Data(elem))
+			ptrsize := int64(p.ctxt.Arch.PtrSize)
+			p.w.ZeroUntil((off + elemSize) / ptrsize)
+			p.w.Repeat(elemSize/ptrsize, n-1)
+		}
+	case abi.Struct:
+		nField := decodetypeStructFieldCount(ldr, p.ctxt.Arch, typ)
+		for i := 0; i < nField; i++ {
+			fTyp := decodetypeStructFieldType(p.ctxt, p.ctxt.Arch, typ, i)
+			if decodetypePtrdata(p.ctxt.Arch, ldr.Data(fTyp)) == 0 {
+				continue
+			}
+			fOff := decodetypeStructFieldOffset(ldr, p.ctxt.Arch, typ, i)
+			p.AddType(off+fOff, fTyp)
+		}
 	}
-
-	// Copy program.
-	prog := decodetypeGcprog(p.ctxt, typ)
-	p.w.ZeroUntil(sval / ptrsize)
-	p.w.Append(prog[4:], nptr)
 }
 
 // cutoff is the maximum data section size permitted by the linker
@@ -1510,6 +1544,9 @@ func (state *dodataState) makeRelroForSharedLib(target *Link) {
 				isRelro = false
 			}
 			if isRelro {
+				if symnrelro == sym.Sxxx {
+					state.ctxt.Errorf(s, "cannot contain relocations (type %v)", symnro)
+				}
 				state.setSymType(s, symnrelro)
 				if outer := ldr.OuterSym(s); outer != 0 {
 					state.setSymType(outer, symnrelro)
@@ -1606,7 +1643,7 @@ func (ctxt *Link) dodata(symGroupType []sym.SymKind) {
 
 		st := state.symType(s)
 
-		if st <= sym.STEXT || st >= sym.SXREF {
+		if st <= sym.STEXTFIPSEND || st >= sym.SXREF {
 			continue
 		}
 		state.data[st] = append(state.data[st], s)
@@ -1846,6 +1883,7 @@ func (state *dodataState) allocateDataSections(ctxt *Link) {
 	// Writable data sections that do not need any specialized handling.
 	writable := []sym.SymKind{
 		sym.SBUILDINFO,
+		sym.SFIPSINFO,
 		sym.SELFSECT,
 		sym.SMACHO,
 		sym.SMACHOGOT,
@@ -1865,6 +1903,11 @@ func (state *dodataState) allocateDataSections(ctxt *Link) {
 	sect := state.allocateNamedSectionAndAssignSyms(&Segdata, ".noptrdata", sym.SNOPTRDATA, sym.SDATA, 06)
 	ldr.SetSymSect(ldr.LookupOrCreateSym("runtime.noptrdata", 0), sect)
 	ldr.SetSymSect(ldr.LookupOrCreateSym("runtime.enoptrdata", 0), sect)
+
+	state.assignToSection(sect, sym.SNOPTRDATAFIPSSTART, sym.SDATA)
+	state.assignToSection(sect, sym.SNOPTRDATAFIPS, sym.SDATA)
+	state.assignToSection(sect, sym.SNOPTRDATAFIPSEND, sym.SDATA)
+	state.assignToSection(sect, sym.SNOPTRDATAEND, sym.SDATA)
 
 	hasinitarr := ctxt.linkShared
 
@@ -1888,6 +1931,12 @@ func (state *dodataState) allocateDataSections(ctxt *Link) {
 	sect = state.allocateNamedSectionAndAssignSyms(&Segdata, ".data", sym.SDATA, sym.SDATA, 06)
 	ldr.SetSymSect(ldr.LookupOrCreateSym("runtime.data", 0), sect)
 	ldr.SetSymSect(ldr.LookupOrCreateSym("runtime.edata", 0), sect)
+
+	state.assignToSection(sect, sym.SDATAFIPSSTART, sym.SDATA)
+	state.assignToSection(sect, sym.SDATAFIPS, sym.SDATA)
+	state.assignToSection(sect, sym.SDATAFIPSEND, sym.SDATA)
+	state.assignToSection(sect, sym.SDATAEND, sym.SDATA)
+
 	dataGcEnd := state.datsize - int64(sect.Vaddr)
 
 	// On AIX, TOC entries must be the last of .data
@@ -2093,6 +2142,9 @@ func (state *dodataState) allocateDataSections(ctxt *Link) {
 			}
 
 			symn := sym.RelROMap[symnro]
+			if symn == sym.Sxxx {
+				continue
+			}
 			symnStartValue := state.datsize
 			if len(state.data[symn]) != 0 {
 				symnStartValue = aligndatsize(state, symnStartValue, state.data[symn][0])
@@ -2433,8 +2485,15 @@ func (ctxt *Link) textaddress() {
 		})
 	}
 
+	// Sort the text symbols by type, so that FIPS symbols are
+	// gathered together, with the FIPS start and end symbols
+	// bracketing them , even if we've randomized the overall order.
+	sort.SliceStable(ctxt.Textp, func(i, j int) bool {
+		return ldr.SymType(ctxt.Textp[i]) < ldr.SymType(ctxt.Textp[j])
+	})
+
 	text := ctxt.xdefine("runtime.text", sym.STEXT, 0)
-	etext := ctxt.xdefine("runtime.etext", sym.STEXT, 0)
+	etext := ctxt.xdefine("runtime.etext", sym.STEXTEND, 0)
 	ldr.SetSymSect(text, sect)
 	if ctxt.IsAIX() && ctxt.IsExternal() {
 		// Setting runtime.text has a real symbol prevents ld to
@@ -2970,11 +3029,11 @@ func (ctxt *Link) address() []*sym.Segment {
 	ctxt.defineInternal("runtime.functab", sym.SRODATA)
 	ctxt.xdefine("runtime.epclntab", sym.SRODATA, int64(pclntab.Vaddr+pclntab.Length))
 	ctxt.xdefine("runtime.noptrdata", sym.SNOPTRDATA, int64(noptr.Vaddr))
-	ctxt.xdefine("runtime.enoptrdata", sym.SNOPTRDATA, int64(noptr.Vaddr+noptr.Length))
+	ctxt.xdefine("runtime.enoptrdata", sym.SNOPTRDATAEND, int64(noptr.Vaddr+noptr.Length))
 	ctxt.xdefine("runtime.bss", sym.SBSS, int64(bss.Vaddr))
 	ctxt.xdefine("runtime.ebss", sym.SBSS, int64(bss.Vaddr+bss.Length))
 	ctxt.xdefine("runtime.data", sym.SDATA, int64(data.Vaddr))
-	ctxt.xdefine("runtime.edata", sym.SDATA, int64(data.Vaddr+data.Length))
+	ctxt.xdefine("runtime.edata", sym.SDATAEND, int64(data.Vaddr+data.Length))
 	ctxt.xdefine("runtime.noptrbss", sym.SNOPTRBSS, int64(noptrbss.Vaddr))
 	ctxt.xdefine("runtime.enoptrbss", sym.SNOPTRBSS, int64(noptrbss.Vaddr+noptrbss.Length))
 	ctxt.xdefine("runtime.covctrs", sym.SCOVERAGE_COUNTER, int64(noptrbss.Vaddr+covCounterDataStartOff))
@@ -3068,8 +3127,8 @@ func (ctxt *Link) layout(order []*sym.Segment) uint64 {
 }
 
 // add a trampoline with symbol s (to be laid down after the current function)
-func (ctxt *Link) AddTramp(s *loader.SymbolBuilder) {
-	s.SetType(sym.STEXT)
+func (ctxt *Link) AddTramp(s *loader.SymbolBuilder, typ sym.SymKind) {
+	s.SetType(typ)
 	s.SetReachable(true)
 	s.SetOnList(true)
 	ctxt.tramps = append(ctxt.tramps, s.Sym())

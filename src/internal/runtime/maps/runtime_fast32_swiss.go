@@ -34,18 +34,22 @@ func runtime_mapaccess1_fast32(typ *abi.SwissMapType, m *Map, key uint32) unsafe
 		g := groupReference{
 			data: m.dirPtr,
 		}
-
+		full := g.ctrls().matchFull()
+		slotKey := g.key(typ, 0)
 		slotSize := typ.SlotSize
-		for i, slotKey := uintptr(0), g.key(typ, 0); i < abi.SwissMapGroupSlots; i, slotKey = i+1, unsafe.Pointer(uintptr(slotKey)+slotSize) {
-			if key == *(*uint32)(slotKey) && (g.ctrls().get(i)&(1<<7)) == 0 {
+		for full != 0 {
+			if key == *(*uint32)(slotKey) && full.lowestSet() {
 				slotElem := unsafe.Pointer(uintptr(slotKey) + typ.ElemOff)
 				return slotElem
 			}
+			slotKey = unsafe.Pointer(uintptr(slotKey) + slotSize)
+			full = full.shiftOutLowest()
 		}
 		return unsafe.Pointer(&zeroVal[0])
 	}
 
-	hash := typ.Hasher(abi.NoEscape(unsafe.Pointer(&key)), m.seed)
+	k := key
+	hash := typ.Hasher(abi.NoEscape(unsafe.Pointer(&k)), m.seed)
 
 	// Select table.
 	idx := m.directoryIndex(hash)
@@ -63,7 +67,7 @@ func runtime_mapaccess1_fast32(typ *abi.SwissMapType, m *Map, key uint32) unsafe
 
 			slotKey := g.key(typ, i)
 			if key == *(*uint32)(slotKey) {
-				slotElem := g.elem(typ, i)
+				slotElem := unsafe.Pointer(uintptr(slotKey) + typ.ElemOff)
 				return slotElem
 			}
 			match = match.removeFirst()
@@ -99,18 +103,22 @@ func runtime_mapaccess2_fast32(typ *abi.SwissMapType, m *Map, key uint32) (unsaf
 		g := groupReference{
 			data: m.dirPtr,
 		}
-
+		full := g.ctrls().matchFull()
+		slotKey := g.key(typ, 0)
 		slotSize := typ.SlotSize
-		for i, slotKey := uintptr(0), g.key(typ, 0); i < abi.SwissMapGroupSlots; i, slotKey = i+1, unsafe.Pointer(uintptr(slotKey)+slotSize) {
-			if key == *(*uint32)(slotKey) && (g.ctrls().get(i)&(1<<7)) == 0 {
+		for full != 0 {
+			if key == *(*uint32)(slotKey) && full.lowestSet() {
 				slotElem := unsafe.Pointer(uintptr(slotKey) + typ.ElemOff)
 				return slotElem, true
 			}
+			slotKey = unsafe.Pointer(uintptr(slotKey) + slotSize)
+			full = full.shiftOutLowest()
 		}
 		return unsafe.Pointer(&zeroVal[0]), false
 	}
 
-	hash := typ.Hasher(abi.NoEscape(unsafe.Pointer(&key)), m.seed)
+	k := key
+	hash := typ.Hasher(abi.NoEscape(unsafe.Pointer(&k)), m.seed)
 
 	// Select table.
 	idx := m.directoryIndex(hash)
@@ -128,7 +136,7 @@ func runtime_mapaccess2_fast32(typ *abi.SwissMapType, m *Map, key uint32) (unsaf
 
 			slotKey := g.key(typ, i)
 			if key == *(*uint32)(slotKey) {
-				slotElem := g.elem(typ, i)
+				slotElem := unsafe.Pointer(uintptr(slotKey) + typ.ElemOff)
 				return slotElem, true
 			}
 			match = match.removeFirst()
@@ -197,7 +205,8 @@ func runtime_mapassign_fast32(typ *abi.SwissMapType, m *Map, key uint32) unsafe.
 		fatal("concurrent map writes")
 	}
 
-	hash := typ.Hasher(abi.NoEscape(unsafe.Pointer(&key)), m.seed)
+	k := key
+	hash := typ.Hasher(abi.NoEscape(unsafe.Pointer(&k)), m.seed)
 
 	// Set writing after calling Hasher, since Hasher may panic, in which
 	// case we have not actually done a write.
@@ -330,7 +339,8 @@ func runtime_mapassign_fast32ptr(typ *abi.SwissMapType, m *Map, key unsafe.Point
 		fatal("concurrent map writes")
 	}
 
-	hash := typ.Hasher(abi.NoEscape(unsafe.Pointer(&key)), m.seed)
+	k := key
+	hash := typ.Hasher(abi.NoEscape(unsafe.Pointer(&k)), m.seed)
 
 	// Set writing after calling Hasher, since Hasher may panic, in which
 	// case we have not actually done a write.

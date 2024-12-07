@@ -7,18 +7,18 @@ package rand
 import (
 	"bytes"
 	"compress/flate"
-	"crypto/internal/boring"
+	"crypto/internal/cryptotest"
 	"errors"
-	"internal/asan"
-	"internal/msan"
-	"internal/race"
 	"internal/testenv"
 	"io"
 	"os"
-	"runtime"
 	"sync"
 	"testing"
 )
+
+// These tests are mostly duplicates of the tests in crypto/internal/sysrand,
+// and testing both the Reader and Read is pretty redundant when one calls the
+// other, but better safe than sorry.
 
 func testReadAndReader(t *testing.T, f func(*testing.T, func([]byte) (int, error))) {
 	t.Run("Read", func(t *testing.T) {
@@ -153,18 +153,7 @@ func testConcurrentRead(t *testing.T, Read func([]byte) (int, error)) {
 var sink byte
 
 func TestAllocations(t *testing.T) {
-	if boring.Enabled {
-		// Might be fixable with https://go.dev/issue/56378.
-		t.Skip("boringcrypto allocates")
-	}
-	if race.Enabled || msan.Enabled || asan.Enabled {
-		t.Skip("urandomRead allocates under -race, -asan, and -msan")
-	}
-	if runtime.GOOS == "plan9" {
-		t.Skip("plan9 allocates")
-	}
-	testenv.SkipIfOptimizationOff(t)
-
+	cryptotest.SkipTestAllocations(t)
 	n := int(testing.AllocsPerRun(10, func() {
 		buf := make([]byte, 32)
 		Read(buf)
@@ -172,28 +161,6 @@ func TestAllocations(t *testing.T) {
 	}))
 	if n > 0 {
 		t.Errorf("allocs = %d, want 0", n)
-	}
-}
-
-// TestNoUrandomFallback ensures the urandom fallback is not reached in
-// normal operations.
-func TestNoUrandomFallback(t *testing.T) {
-	expectFallback := false
-	if runtime.GOOS == "aix" {
-		// AIX always uses the urandom fallback.
-		expectFallback = true
-	}
-	if os.Getenv("GO_GETRANDOM_DISABLED") == "1" {
-		// We are testing the urandom fallback intentionally.
-		expectFallback = true
-	}
-	Read(make([]byte, 1))
-	if urandomFile != nil && !expectFallback {
-		t.Error("/dev/urandom fallback used unexpectedly")
-		t.Log("note: if this test fails, it may be because the system does not have getrandom(2)")
-	}
-	if urandomFile == nil && expectFallback {
-		t.Error("/dev/urandom fallback not used as expected")
 	}
 }
 
@@ -209,9 +176,8 @@ func TestReadError(t *testing.T) {
 		Reader = readerFunc(func([]byte) (int, error) {
 			return 0, errors.New("error")
 		})
-		if _, err := Read(make([]byte, 32)); err == nil {
-			t.Error("Read did not return error")
-		}
+		Read(make([]byte, 32))
+		t.Error("Read did not crash")
 		return
 	}
 

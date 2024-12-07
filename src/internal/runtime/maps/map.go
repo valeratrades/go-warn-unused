@@ -296,7 +296,7 @@ func NewMap(mt *abi.SwissMapType, hint uintptr, m *Map, maxAlloc uintptr) *Map {
 	if overflow {
 		return m // return an empty map.
 	} else {
-		mem, overflow := math.MulUintptr(groups, mt.Group.Size_)
+		mem, overflow := math.MulUintptr(groups, mt.GroupSize)
 		if overflow || mem > maxAlloc {
 			return m // return an empty map.
 		}
@@ -621,13 +621,7 @@ func (m *Map) growToTable(typ *abi.SwissMapType) {
 
 		hash := typ.Hasher(key, m.seed)
 
-		// TODO(prattmic): For indirect key/elem, this is
-		// allocating new objects for key/elem. That is
-		// unnecessary; the new table could simply point to the
-		// existing object.
-		slotElem := tab.uncheckedPutSlot(typ, hash, key)
-		typedmemmove(typ.Elem, slotElem, elem)
-		tab.used++
+		tab.uncheckedPutSlot(typ, hash, key, elem)
 	}
 
 	directory := make([]*table, 1)
@@ -663,7 +657,7 @@ func (m *Map) Delete(typ *abi.SwissMapType, key unsafe.Pointer) {
 		m.deleteSmall(typ, hash, key)
 	} else {
 		idx := m.directoryIndex(hash)
-		m.directoryAt(idx).Delete(typ, m, key)
+		m.directoryAt(idx).Delete(typ, m, hash, key)
 	}
 
 	if m.used == 0 {

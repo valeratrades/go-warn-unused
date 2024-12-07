@@ -1229,7 +1229,7 @@ func blockFrequentShort(rate int) {
 	}
 }
 
-// blockFrequentShort produces 10000 block events with an average duration of
+// blockInfrequentLong produces 10000 block events with an average duration of
 // rate.
 func blockInfrequentLong(rate int) {
 	for i := 0; i < 10000; i++ {
@@ -1482,11 +1482,11 @@ func TestGoroutineCounts(t *testing.T) {
 	goroutineProf.WriteTo(&w, 1)
 	prof := w.String()
 
-	labels := labelMap{"label": "value"}
+	labels := labelMap{Labels("label", "value")}
 	labelStr := "\n# labels: " + labels.String()
-	selfLabel := labelMap{"self-label": "self-value"}
+	selfLabel := labelMap{Labels("self-label", "self-value")}
 	selfLabelStr := "\n# labels: " + selfLabel.String()
-	fingLabel := labelMap{"fing-label": "fing-value"}
+	fingLabel := labelMap{Labels("fing-label", "fing-value")}
 	fingLabelStr := "\n# labels: " + fingLabel.String()
 	orderedPrefix := []string{
 		"\n50 @ ",

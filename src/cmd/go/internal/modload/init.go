@@ -23,6 +23,7 @@ import (
 
 	"cmd/go/internal/base"
 	"cmd/go/internal/cfg"
+	"cmd/go/internal/fips140"
 	"cmd/go/internal/fsys"
 	"cmd/go/internal/gover"
 	"cmd/go/internal/lockedfile"
@@ -355,7 +356,8 @@ func BinDir() string {
 // for example 'go mod tidy', that don't operate in workspace mode.
 func InitWorkfile() {
 	// Initialize fsys early because we need overlay to read go.work file.
-	if err := fsys.Init(base.Cwd()); err != nil {
+	fips140.Init()
+	if err := fsys.Init(); err != nil {
 		base.Fatal(err)
 	}
 	workFilePath = FindGoWork(base.Cwd())
@@ -414,6 +416,8 @@ func Init() {
 	}
 	initialized = true
 
+	fips140.Init()
+
 	// Keep in sync with WillBeEnabled. We perform extra validation here, and
 	// there are lots of diagnostics and side effects, so we can't use
 	// WillBeEnabled directly.
@@ -434,7 +438,7 @@ func Init() {
 		return
 	}
 
-	if err := fsys.Init(base.Cwd()); err != nil {
+	if err := fsys.Init(); err != nil {
 		base.Fatal(err)
 	}
 
@@ -940,7 +944,7 @@ func loadModFile(ctx context.Context, opts *PackageOpts) (*Requirements, error) 
 					err = errWorkTooOld(gomod, workFile, tooNew.GoVersion)
 				} else {
 					err = fmt.Errorf("cannot load module %s listed in go.work file: %w",
-						base.ShortPath(filepath.Dir(gomod)), err)
+						base.ShortPath(filepath.Dir(gomod)), base.ShortPathError(err))
 				}
 			}
 			errs = append(errs, err)
@@ -1938,7 +1942,7 @@ func commitRequirements(ctx context.Context, opts WriteOpts) (err error) {
 
 	mainModule := MainModules.mustGetSingleMainModule()
 	modFilePath := modFilePath(MainModules.ModRoot(mainModule))
-	if _, ok := fsys.OverlayPath(modFilePath); ok {
+	if fsys.Replaced(modFilePath) {
 		if dirty {
 			return errors.New("updates to go.mod needed, but go.mod is part of the overlay specified with -overlay")
 		}

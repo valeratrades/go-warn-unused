@@ -71,11 +71,13 @@ func init() {
 		vet.CmdVet,
 
 		help.HelpBuildConstraint,
+		help.HelpBuildJSON,
 		help.HelpBuildmode,
 		help.HelpC,
 		help.HelpCache,
 		help.HelpEnvironment,
 		help.HelpFileType,
+		help.HelpGoAuth,
 		modload.HelpGoMod,
 		help.HelpGopath,
 		modfetch.HelpGoproxy,
@@ -219,7 +221,7 @@ func main() {
 	base.Exit()
 }
 
-// cmdIsGoTelemeteryOff reports whether the command is "go telemetry off". This
+// cmdIsGoTelemetryOff reports whether the command is "go telemetry off". This
 // is used to decide whether to disable the opening of counter files. See #69269.
 func cmdIsGoTelemetryOff() bool {
 	restArgs := os.Args[1:]

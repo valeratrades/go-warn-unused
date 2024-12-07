@@ -6,6 +6,7 @@ package ssagen
 
 import (
 	"fmt"
+	"internal/abi"
 	"internal/buildcfg"
 
 	"cmd/compile/internal/base"
@@ -298,7 +299,7 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 		},
 		sys.PPC64)
 
-	makeAtomicGuardedIntrinsicLoong64common := func(op0, op1 ssa.Op, typ types.Kind, emit atomicOpEmitter, needReturn bool) intrinsicBuilder {
+	makeAtomicStoreGuardedIntrinsicLoong64 := func(op0, op1 ssa.Op, typ types.Kind, emit atomicOpEmitter) intrinsicBuilder {
 		return func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			// Target Atomic feature is identified by dynamic detection
 			addr := s.entryNewValue1A(ssa.OpAddr, types.Types[types.TBOOL].PtrTo(), ir.Syms.Loong64HasLAM_BH, s.sb)
@@ -315,27 +316,19 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 
 			// We have atomic instructions - use it directly.
 			s.startBlock(bTrue)
-			emit(s, n, args, op1, typ, needReturn)
+			emit(s, n, args, op1, typ, false)
 			s.endBlock().AddEdgeTo(bEnd)
 
 			// Use original instruction sequence.
 			s.startBlock(bFalse)
-			emit(s, n, args, op0, typ, needReturn)
+			emit(s, n, args, op0, typ, false)
 			s.endBlock().AddEdgeTo(bEnd)
 
 			// Merge results.
 			s.startBlock(bEnd)
 
-			if needReturn {
-				return s.variable(n, types.Types[typ])
-			} else {
-				return nil
-			}
+			return nil
 		}
-	}
-
-	makeAtomicStoreGuardedIntrinsicLoong64 := func(op0, op1 ssa.Op, typ types.Kind, emit atomicOpEmitter) intrinsicBuilder {
-		return makeAtomicGuardedIntrinsicLoong64common(op0, op1, typ, emit, false)
 	}
 
 	atomicStoreEmitterLoong64 := func(s *state, n *ir.CallExpr, args []*ssa.Value, op ssa.Op, typ types.Kind, needReturn bool) {
@@ -447,6 +440,41 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 		makeAtomicGuardedIntrinsicARM64(ssa.OpAtomicExchange64, ssa.OpAtomicExchange64Variant, types.TUINT64, atomicEmitterARM64),
 		sys.ARM64)
 
+	makeAtomicXchg8GuardedIntrinsicLoong64 := func(op ssa.Op) func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+		return func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+			addr := s.entryNewValue1A(ssa.OpAddr, types.Types[types.TBOOL].PtrTo(), ir.Syms.Loong64HasLAM_BH, s.sb)
+			v := s.load(types.Types[types.TBOOL], addr)
+			b := s.endBlock()
+			b.Kind = ssa.BlockIf
+			b.SetControl(v)
+			bTrue := s.f.NewBlock(ssa.BlockPlain)
+			bFalse := s.f.NewBlock(ssa.BlockPlain)
+			bEnd := s.f.NewBlock(ssa.BlockPlain)
+			b.AddEdgeTo(bTrue)
+			b.AddEdgeTo(bFalse)
+			b.Likely = ssa.BranchLikely // most loong64 machines support the amswapdb.b
+
+			// We have the intrinsic - use it directly.
+			s.startBlock(bTrue)
+			s.vars[n] = s.newValue3(op, types.NewTuple(types.Types[types.TUINT8], types.TypeMem), args[0], args[1], s.mem())
+			s.vars[memVar] = s.newValue1(ssa.OpSelect1, types.TypeMem, s.vars[n])
+			s.vars[n] = s.newValue1(ssa.OpSelect0, types.Types[types.TUINT8], s.vars[n])
+			s.endBlock().AddEdgeTo(bEnd)
+
+			// Call the pure Go version.
+			s.startBlock(bFalse)
+			s.vars[n] = s.callResult(n, callNormal) // types.Types[TUINT8]
+			s.endBlock().AddEdgeTo(bEnd)
+
+			// Merge results.
+			s.startBlock(bEnd)
+			return s.variable(n, types.Types[types.TUINT8])
+		}
+	}
+	addF("internal/runtime/atomic", "Xchg8",
+		makeAtomicXchg8GuardedIntrinsicLoong64(ssa.OpAtomicExchange8Variant),
+		sys.Loong64)
+
 	addF("internal/runtime/atomic", "Xadd",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			v := s.newValue3(ssa.OpAtomicAdd32, types.NewTuple(types.Types[types.TUINT32], types.TypeMem), args[0], args[1], s.mem())
@@ -475,14 +503,14 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 			s.vars[memVar] = s.newValue1(ssa.OpSelect1, types.TypeMem, v)
 			return s.newValue1(ssa.OpSelect0, types.Types[types.TBOOL], v)
 		},
-		sys.AMD64, sys.Loong64, sys.MIPS, sys.MIPS64, sys.PPC64, sys.RISCV64, sys.S390X)
+		sys.AMD64, sys.MIPS, sys.MIPS64, sys.PPC64, sys.RISCV64, sys.S390X)
 	addF("internal/runtime/atomic", "Cas64",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			v := s.newValue4(ssa.OpAtomicCompareAndSwap64, types.NewTuple(types.Types[types.TBOOL], types.TypeMem), args[0], args[1], args[2], s.mem())
 			s.vars[memVar] = s.newValue1(ssa.OpSelect1, types.TypeMem, v)
 			return s.newValue1(ssa.OpSelect0, types.Types[types.TBOOL], v)
 		},
-		sys.AMD64, sys.Loong64, sys.MIPS64, sys.PPC64, sys.RISCV64, sys.S390X)
+		sys.AMD64, sys.MIPS64, sys.PPC64, sys.RISCV64, sys.S390X)
 	addF("internal/runtime/atomic", "CasRel",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			v := s.newValue4(ssa.OpAtomicCompareAndSwap32, types.NewTuple(types.Types[types.TBOOL], types.TypeMem), args[0], args[1], args[2], s.mem())
@@ -506,31 +534,78 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 		makeAtomicGuardedIntrinsicARM64(ssa.OpAtomicCompareAndSwap64, ssa.OpAtomicCompareAndSwap64Variant, types.TBOOL, atomicCasEmitterARM64),
 		sys.ARM64)
 
+	atomicCasEmitterLoong64 := func(s *state, n *ir.CallExpr, args []*ssa.Value, op ssa.Op, typ types.Kind, needReturn bool) {
+		v := s.newValue4(op, types.NewTuple(types.Types[types.TBOOL], types.TypeMem), args[0], args[1], args[2], s.mem())
+		s.vars[memVar] = s.newValue1(ssa.OpSelect1, types.TypeMem, v)
+		if needReturn {
+			s.vars[n] = s.newValue1(ssa.OpSelect0, types.Types[typ], v)
+		}
+	}
+
+	makeAtomicCasGuardedIntrinsicLoong64 := func(op0, op1 ssa.Op, emit atomicOpEmitter) intrinsicBuilder {
+		return func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+			// Target Atomic feature is identified by dynamic detection
+			addr := s.entryNewValue1A(ssa.OpAddr, types.Types[types.TBOOL].PtrTo(), ir.Syms.Loong64HasLAMCAS, s.sb)
+			v := s.load(types.Types[types.TBOOL], addr)
+			b := s.endBlock()
+			b.Kind = ssa.BlockIf
+			b.SetControl(v)
+			bTrue := s.f.NewBlock(ssa.BlockPlain)
+			bFalse := s.f.NewBlock(ssa.BlockPlain)
+			bEnd := s.f.NewBlock(ssa.BlockPlain)
+			b.AddEdgeTo(bTrue)
+			b.AddEdgeTo(bFalse)
+			b.Likely = ssa.BranchLikely
+
+			// We have atomic instructions - use it directly.
+			s.startBlock(bTrue)
+			emit(s, n, args, op1, types.TBOOL, true)
+			s.endBlock().AddEdgeTo(bEnd)
+
+			// Use original instruction sequence.
+			s.startBlock(bFalse)
+			emit(s, n, args, op0, types.TBOOL, true)
+			s.endBlock().AddEdgeTo(bEnd)
+
+			// Merge results.
+			s.startBlock(bEnd)
+
+			return s.variable(n, types.Types[types.TBOOL])
+		}
+	}
+
+	addF("internal/runtime/atomic", "Cas",
+		makeAtomicCasGuardedIntrinsicLoong64(ssa.OpAtomicCompareAndSwap32, ssa.OpAtomicCompareAndSwap32Variant, atomicCasEmitterLoong64),
+		sys.Loong64)
+	addF("internal/runtime/atomic", "Cas64",
+		makeAtomicCasGuardedIntrinsicLoong64(ssa.OpAtomicCompareAndSwap64, ssa.OpAtomicCompareAndSwap64Variant, atomicCasEmitterLoong64),
+		sys.Loong64)
+
 	// Old-style atomic logical operation API (all supported archs except arm64).
 	addF("internal/runtime/atomic", "And8",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			s.vars[memVar] = s.newValue3(ssa.OpAtomicAnd8, types.TypeMem, args[0], args[1], s.mem())
 			return nil
 		},
-		sys.AMD64, sys.MIPS, sys.MIPS64, sys.PPC64, sys.RISCV64, sys.S390X)
+		sys.AMD64, sys.Loong64, sys.MIPS, sys.MIPS64, sys.PPC64, sys.RISCV64, sys.S390X)
 	addF("internal/runtime/atomic", "And",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			s.vars[memVar] = s.newValue3(ssa.OpAtomicAnd32, types.TypeMem, args[0], args[1], s.mem())
 			return nil
 		},
-		sys.AMD64, sys.MIPS, sys.MIPS64, sys.PPC64, sys.RISCV64, sys.S390X)
+		sys.AMD64, sys.Loong64, sys.MIPS, sys.MIPS64, sys.PPC64, sys.RISCV64, sys.S390X)
 	addF("internal/runtime/atomic", "Or8",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			s.vars[memVar] = s.newValue3(ssa.OpAtomicOr8, types.TypeMem, args[0], args[1], s.mem())
 			return nil
 		},
-		sys.AMD64, sys.MIPS, sys.MIPS64, sys.PPC64, sys.RISCV64, sys.S390X)
+		sys.AMD64, sys.Loong64, sys.MIPS, sys.MIPS64, sys.PPC64, sys.RISCV64, sys.S390X)
 	addF("internal/runtime/atomic", "Or",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			s.vars[memVar] = s.newValue3(ssa.OpAtomicOr32, types.TypeMem, args[0], args[1], s.mem())
 			return nil
 		},
-		sys.AMD64, sys.MIPS, sys.MIPS64, sys.PPC64, sys.RISCV64, sys.S390X)
+		sys.AMD64, sys.Loong64, sys.MIPS, sys.MIPS64, sys.PPC64, sys.RISCV64, sys.S390X)
 
 	// arm64 always uses the new-style atomic logical operations, for both the
 	// old and new style API.
@@ -567,7 +642,7 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 			s.vars[memVar] = p1
 			return p0
 		},
-		sys.AMD64)
+		sys.AMD64, sys.Loong64)
 	addF("internal/runtime/atomic", "And32",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			v := s.newValue3(ssa.OpAtomicAnd32value, types.NewTuple(types.Types[types.TUINT32], types.TypeMem), args[0], args[1], s.mem())
@@ -575,7 +650,7 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 			s.vars[memVar] = p1
 			return p0
 		},
-		sys.AMD64)
+		sys.AMD64, sys.Loong64)
 	addF("internal/runtime/atomic", "Or64",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			v := s.newValue3(ssa.OpAtomicOr64value, types.NewTuple(types.Types[types.TUINT64], types.TypeMem), args[0], args[1], s.mem())
@@ -583,7 +658,7 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 			s.vars[memVar] = p1
 			return p0
 		},
-		sys.AMD64)
+		sys.AMD64, sys.Loong64)
 	addF("internal/runtime/atomic", "Or32",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			v := s.newValue3(ssa.OpAtomicOr32value, types.NewTuple(types.Types[types.TUINT32], types.TypeMem), args[0], args[1], s.mem())
@@ -591,7 +666,7 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 			s.vars[memVar] = p1
 			return p0
 		},
-		sys.AMD64)
+		sys.AMD64, sys.Loong64)
 
 	// Aliases for atomic load operations
 	alias("internal/runtime/atomic", "Loadint32", "internal/runtime/atomic", "Load", all...)
@@ -641,8 +716,8 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 	alias("internal/runtime/atomic", "CasRel", "internal/runtime/atomic", "Cas", lwatomics...)
 
 	// Aliases for atomic And/Or operations
-	alias("internal/runtime/atomic", "Anduintptr", "internal/runtime/atomic", "And64", sys.ArchARM64)
-	alias("internal/runtime/atomic", "Oruintptr", "internal/runtime/atomic", "Or64", sys.ArchARM64)
+	alias("internal/runtime/atomic", "Anduintptr", "internal/runtime/atomic", "And64", sys.ArchARM64, sys.ArchLoong64)
+	alias("internal/runtime/atomic", "Oruintptr", "internal/runtime/atomic", "Or64", sys.ArchARM64, sys.ArchLoong64)
 
 	/******** math ********/
 	addF("math", "sqrt",
@@ -811,7 +886,7 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			return s.newValue1(ssa.OpCtz64, types.Types[types.TINT], args[0])
 		},
-		sys.AMD64, sys.ARM64, sys.ARM, sys.S390X, sys.MIPS, sys.PPC64, sys.Wasm)
+		sys.AMD64, sys.ARM64, sys.ARM, sys.Loong64, sys.S390X, sys.MIPS, sys.PPC64, sys.Wasm)
 	addF("math/bits", "TrailingZeros64",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			lo := s.newValue1(ssa.OpInt64Lo, types.Types[types.TUINT32], args[0])
@@ -823,7 +898,7 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			return s.newValue1(ssa.OpCtz32, types.Types[types.TINT], args[0])
 		},
-		sys.AMD64, sys.I386, sys.ARM64, sys.ARM, sys.S390X, sys.MIPS, sys.PPC64, sys.Wasm)
+		sys.AMD64, sys.I386, sys.ARM64, sys.ARM, sys.Loong64, sys.S390X, sys.MIPS, sys.PPC64, sys.Wasm)
 	addF("math/bits", "TrailingZeros16",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			x := s.newValue1(ssa.OpZeroExt16to32, types.Types[types.TUINT32], args[0])
@@ -844,7 +919,7 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 			y := s.newValue2(ssa.OpOr64, types.Types[types.TUINT64], x, c)
 			return s.newValue1(ssa.OpCtz64, types.Types[types.TINT], y)
 		},
-		sys.S390X, sys.PPC64)
+		sys.Loong64, sys.S390X, sys.PPC64)
 	addF("math/bits", "TrailingZeros8",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			x := s.newValue1(ssa.OpZeroExt8to32, types.Types[types.TUINT32], args[0])
@@ -865,7 +940,7 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 			y := s.newValue2(ssa.OpOr64, types.Types[types.TUINT64], x, c)
 			return s.newValue1(ssa.OpCtz64, types.Types[types.TINT], y)
 		},
-		sys.S390X)
+		sys.Loong64, sys.S390X)
 	alias("math/bits", "ReverseBytes64", "internal/runtime/sys", "Bswap64", all...)
 	alias("math/bits", "ReverseBytes32", "internal/runtime/sys", "Bswap32", all...)
 	addF("math/bits", "ReverseBytes16",
@@ -946,27 +1021,27 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			return s.newValue1(ssa.OpBitRev64, types.Types[types.TINT], args[0])
 		},
-		sys.ARM64)
+		sys.ARM64, sys.Loong64)
 	addF("math/bits", "Reverse32",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			return s.newValue1(ssa.OpBitRev32, types.Types[types.TINT], args[0])
 		},
-		sys.ARM64)
+		sys.ARM64, sys.Loong64)
 	addF("math/bits", "Reverse16",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			return s.newValue1(ssa.OpBitRev16, types.Types[types.TINT], args[0])
 		},
-		sys.ARM64)
+		sys.ARM64, sys.Loong64)
 	addF("math/bits", "Reverse8",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			return s.newValue1(ssa.OpBitRev8, types.Types[types.TINT], args[0])
 		},
-		sys.ARM64)
+		sys.ARM64, sys.Loong64)
 	addF("math/bits", "Reverse",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			return s.newValue1(ssa.OpBitRev64, types.Types[types.TINT], args[0])
 		},
-		sys.ARM64)
+		sys.ARM64, sys.Loong64)
 	addF("math/bits", "RotateLeft8",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			return s.newValue2(ssa.OpRotateLeft8, types.Types[types.TUINT8], args[0], args[1])
@@ -1021,9 +1096,43 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 			return s.variable(n, types.Types[types.TINT])
 		}
 	}
+
+	makeOnesCountLoong64 := func(op ssa.Op) func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+		return func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+			addr := s.entryNewValue1A(ssa.OpAddr, types.Types[types.TBOOL].PtrTo(), ir.Syms.Loong64HasLSX, s.sb)
+			v := s.load(types.Types[types.TBOOL], addr)
+			b := s.endBlock()
+			b.Kind = ssa.BlockIf
+			b.SetControl(v)
+			bTrue := s.f.NewBlock(ssa.BlockPlain)
+			bFalse := s.f.NewBlock(ssa.BlockPlain)
+			bEnd := s.f.NewBlock(ssa.BlockPlain)
+			b.AddEdgeTo(bTrue)
+			b.AddEdgeTo(bFalse)
+			b.Likely = ssa.BranchLikely // most loong64 machines support the LSX
+
+			// We have the intrinsic - use it directly.
+			s.startBlock(bTrue)
+			s.vars[n] = s.newValue1(op, types.Types[types.TINT], args[0])
+			s.endBlock().AddEdgeTo(bEnd)
+
+			// Call the pure Go version.
+			s.startBlock(bFalse)
+			s.vars[n] = s.callResult(n, callNormal) // types.Types[TINT]
+			s.endBlock().AddEdgeTo(bEnd)
+
+			// Merge results.
+			s.startBlock(bEnd)
+			return s.variable(n, types.Types[types.TINT])
+		}
+	}
+
 	addF("math/bits", "OnesCount64",
 		makeOnesCountAMD64(ssa.OpPopCount64),
 		sys.AMD64)
+	addF("math/bits", "OnesCount64",
+		makeOnesCountLoong64(ssa.OpPopCount64),
+		sys.Loong64)
 	addF("math/bits", "OnesCount64",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			return s.newValue1(ssa.OpPopCount64, types.Types[types.TINT], args[0])
@@ -1033,6 +1142,9 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 		makeOnesCountAMD64(ssa.OpPopCount32),
 		sys.AMD64)
 	addF("math/bits", "OnesCount32",
+		makeOnesCountLoong64(ssa.OpPopCount32),
+		sys.Loong64)
+	addF("math/bits", "OnesCount32",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			return s.newValue1(ssa.OpPopCount32, types.Types[types.TINT], args[0])
 		},
@@ -1040,6 +1152,9 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 	addF("math/bits", "OnesCount16",
 		makeOnesCountAMD64(ssa.OpPopCount16),
 		sys.AMD64)
+	addF("math/bits", "OnesCount16",
+		makeOnesCountLoong64(ssa.OpPopCount16),
+		sys.Loong64)
 	addF("math/bits", "OnesCount16",
 		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
 			return s.newValue1(ssa.OpPopCount16, types.Types[types.TINT], args[0])
@@ -1132,19 +1247,310 @@ func initIntrinsics(cfg *intrinsicBuildConfig) {
 	alias("sync/atomic", "AddUintptr", "internal/runtime/atomic", "Xadd", p4...)
 	alias("sync/atomic", "AddUintptr", "internal/runtime/atomic", "Xadd64", p8...)
 
-	alias("sync/atomic", "AndInt32", "internal/runtime/atomic", "And32", sys.ArchARM64, sys.ArchAMD64)
-	alias("sync/atomic", "AndUint32", "internal/runtime/atomic", "And32", sys.ArchARM64, sys.ArchAMD64)
-	alias("sync/atomic", "AndInt64", "internal/runtime/atomic", "And64", sys.ArchARM64, sys.ArchAMD64)
-	alias("sync/atomic", "AndUint64", "internal/runtime/atomic", "And64", sys.ArchARM64, sys.ArchAMD64)
-	alias("sync/atomic", "AndUintptr", "internal/runtime/atomic", "And64", sys.ArchARM64, sys.ArchAMD64)
-	alias("sync/atomic", "OrInt32", "internal/runtime/atomic", "Or32", sys.ArchARM64, sys.ArchAMD64)
-	alias("sync/atomic", "OrUint32", "internal/runtime/atomic", "Or32", sys.ArchARM64, sys.ArchAMD64)
-	alias("sync/atomic", "OrInt64", "internal/runtime/atomic", "Or64", sys.ArchARM64, sys.ArchAMD64)
-	alias("sync/atomic", "OrUint64", "internal/runtime/atomic", "Or64", sys.ArchARM64, sys.ArchAMD64)
-	alias("sync/atomic", "OrUintptr", "internal/runtime/atomic", "Or64", sys.ArchARM64, sys.ArchAMD64)
+	alias("sync/atomic", "AndInt32", "internal/runtime/atomic", "And32", sys.ArchARM64, sys.ArchAMD64, sys.ArchLoong64)
+	alias("sync/atomic", "AndUint32", "internal/runtime/atomic", "And32", sys.ArchARM64, sys.ArchAMD64, sys.ArchLoong64)
+	alias("sync/atomic", "AndInt64", "internal/runtime/atomic", "And64", sys.ArchARM64, sys.ArchAMD64, sys.ArchLoong64)
+	alias("sync/atomic", "AndUint64", "internal/runtime/atomic", "And64", sys.ArchARM64, sys.ArchAMD64, sys.ArchLoong64)
+	alias("sync/atomic", "AndUintptr", "internal/runtime/atomic", "And64", sys.ArchARM64, sys.ArchAMD64, sys.ArchLoong64)
+	alias("sync/atomic", "OrInt32", "internal/runtime/atomic", "Or32", sys.ArchARM64, sys.ArchAMD64, sys.ArchLoong64)
+	alias("sync/atomic", "OrUint32", "internal/runtime/atomic", "Or32", sys.ArchARM64, sys.ArchAMD64, sys.ArchLoong64)
+	alias("sync/atomic", "OrInt64", "internal/runtime/atomic", "Or64", sys.ArchARM64, sys.ArchAMD64, sys.ArchLoong64)
+	alias("sync/atomic", "OrUint64", "internal/runtime/atomic", "Or64", sys.ArchARM64, sys.ArchAMD64, sys.ArchLoong64)
+	alias("sync/atomic", "OrUintptr", "internal/runtime/atomic", "Or64", sys.ArchARM64, sys.ArchAMD64, sys.ArchLoong64)
 
 	/******** math/big ********/
 	alias("math/big", "mulWW", "math/bits", "Mul64", p8...)
+
+	/******** internal/runtime/maps ********/
+
+	// Important: The intrinsic implementations below return a packed
+	// bitset, while the portable Go implementation uses an unpacked
+	// representation (one bit set in each byte).
+	//
+	// Thus we must replace most bitset methods with implementations that
+	// work with the packed representation.
+	//
+	// TODO(prattmic): The bitset implementations don't use SIMD, so they
+	// could be handled with build tags (though that would break
+	// -d=ssa/intrinsics/off=1).
+
+	// With a packed representation we no longer need to shift the result
+	// of TrailingZeros64.
+	alias("internal/runtime/maps", "bitsetFirst", "internal/runtime/sys", "TrailingZeros64", sys.ArchAMD64)
+
+	addF("internal/runtime/maps", "bitsetRemoveBelow",
+		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+			b := args[0]
+			i := args[1]
+
+			// Clear the lower i bits in b.
+			//
+			// out = b &^ ((1 << i) - 1)
+
+			one := s.constInt64(types.Types[types.TUINT64], 1)
+
+			mask := s.newValue2(ssa.OpLsh8x8, types.Types[types.TUINT64], one, i)
+			mask = s.newValue2(ssa.OpSub64, types.Types[types.TUINT64], mask, one)
+			mask = s.newValue1(ssa.OpCom64, types.Types[types.TUINT64], mask)
+
+			return s.newValue2(ssa.OpAnd64, types.Types[types.TUINT64], b, mask)
+		},
+		sys.AMD64)
+
+	addF("internal/runtime/maps", "bitsetLowestSet",
+		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+			b := args[0]
+
+			// Test the lowest bit in b.
+			//
+			// out = (b & 1) == 1
+
+			one := s.constInt64(types.Types[types.TUINT64], 1)
+			and := s.newValue2(ssa.OpAnd64, types.Types[types.TUINT64], b, one)
+			return s.newValue2(ssa.OpEq64, types.Types[types.TBOOL], and, one)
+		},
+		sys.AMD64)
+
+	addF("internal/runtime/maps", "bitsetShiftOutLowest",
+		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+			b := args[0]
+
+			// Right shift out the lowest bit in b.
+			//
+			// out = b >> 1
+
+			one := s.constInt64(types.Types[types.TUINT64], 1)
+			return s.newValue2(ssa.OpRsh64Ux64, types.Types[types.TUINT64], b, one)
+		},
+		sys.AMD64)
+
+	addF("internal/runtime/maps", "ctrlGroupMatchH2",
+		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+			g := args[0]
+			h := args[1]
+
+			// Explicit copies to fp registers. See
+			// https://go.dev/issue/70451.
+			gfp := s.newValue1(ssa.OpAMD64MOVQi2f, types.TypeInt128, g)
+			hfp := s.newValue1(ssa.OpAMD64MOVQi2f, types.TypeInt128, h)
+
+			// Broadcast h2 into each byte of a word.
+			var broadcast *ssa.Value
+			if buildcfg.GOAMD64 >= 4 {
+				// VPBROADCASTB saves 1 instruction vs PSHUFB
+				// because the input can come from a GP
+				// register, while PSHUFB requires moving into
+				// an FP register first.
+				//
+				// Nominally PSHUFB would require a second
+				// additional instruction to load the control
+				// mask into a FP register. But broadcast uses
+				// a control mask of 0, and the register ABI
+				// already defines X15 as a zero register.
+				broadcast = s.newValue1(ssa.OpAMD64VPBROADCASTB, types.TypeInt128, h) // use gp copy of h
+			} else if buildcfg.GOAMD64 >= 2 {
+				// PSHUFB performs a byte broadcast when given
+				// a control input of 0.
+				broadcast = s.newValue1(ssa.OpAMD64PSHUFBbroadcast, types.TypeInt128, hfp)
+			} else {
+				// No direct byte broadcast. First we must
+				// duplicate the lower byte and then do a
+				// 16-bit broadcast.
+
+				// "Unpack" h2 with itself. This duplicates the
+				// input, resulting in h2 in the lower two
+				// bytes.
+				unpack := s.newValue2(ssa.OpAMD64PUNPCKLBW, types.TypeInt128, hfp, hfp)
+
+				// Copy the lower 16-bits of unpack into every
+				// 16-bit slot in the lower 64-bits of the
+				// output register. Note that immediate 0
+				// selects the low word as the source for every
+				// destination slot.
+				broadcast = s.newValue1I(ssa.OpAMD64PSHUFLW, types.TypeInt128, 0, unpack)
+
+				// No need to broadcast into the upper 64-bits,
+				// as we don't use those.
+			}
+
+			// Compare each byte of the control word with h2. Each
+			// matching byte has every bit set.
+			eq := s.newValue2(ssa.OpAMD64PCMPEQB, types.TypeInt128, broadcast, gfp)
+
+			// Construct a "byte mask": each output bit is equal to
+			// the sign bit each input byte.
+			//
+			// This results in a packed output (bit N set means
+			// byte N matched).
+			//
+			// NOTE: See comment above on bitsetFirst.
+			out := s.newValue1(ssa.OpAMD64PMOVMSKB, types.Types[types.TUINT16], eq)
+
+			// g is only 64-bits so the upper 64-bits of the
+			// 128-bit register will be zero. If h2 is also zero,
+			// then we'll get matches on those bytes. Truncate the
+			// upper bits to ignore such matches.
+			ret := s.newValue1(ssa.OpZeroExt8to64, types.Types[types.TUINT64], out)
+
+			return ret
+		},
+		sys.AMD64)
+
+	addF("internal/runtime/maps", "ctrlGroupMatchEmpty",
+		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+			// An empty slot is   1000 0000
+			// A deleted slot is  1111 1110
+			// A full slot is     0??? ????
+
+			g := args[0]
+
+			// Explicit copy to fp register. See
+			// https://go.dev/issue/70451.
+			gfp := s.newValue1(ssa.OpAMD64MOVQi2f, types.TypeInt128, g)
+
+			if buildcfg.GOAMD64 >= 2 {
+				// "PSIGNB negates each data element of the
+				// destination operand (the first operand) if
+				// the signed integer value of the
+				// corresponding data element in the source
+				// operand (the second operand) is less than
+				// zero. If the signed integer value of a data
+				// element in the source operand is positive,
+				// the corresponding data element in the
+				// destination operand is unchanged. If a data
+				// element in the source operand is zero, the
+				// corresponding data element in the
+				// destination operand is set to zero" - Intel SDM
+				//
+				// If we pass the group control word as both
+				// arguments:
+				// - Full slots are unchanged.
+				// - Deleted slots are negated, becoming
+				//   0000 0010.
+				// - Empty slots are negated, becoming
+				//   1000 0000 (unchanged!).
+				//
+				// The result is that only empty slots have the
+				// sign bit set. We then use PMOVMSKB to
+				// extract the sign bits.
+				sign := s.newValue2(ssa.OpAMD64PSIGNB, types.TypeInt128, gfp, gfp)
+
+				// Construct a "byte mask": each output bit is
+				// equal to the sign bit each input byte. The
+				// sign bit is only set for empty or deleted
+				// slots.
+				//
+				// This results in a packed output (bit N set
+				// means byte N matched).
+				//
+				// NOTE: See comment above on bitsetFirst.
+				ret := s.newValue1(ssa.OpAMD64PMOVMSKB, types.Types[types.TUINT16], sign)
+
+				// g is only 64-bits so the upper 64-bits of
+				// the 128-bit register will be zero. PSIGNB
+				// will keep all of these bytes zero, so no
+				// need to truncate.
+
+				return ret
+			}
+
+			// No PSIGNB, simply do byte equality with ctrlEmpty.
+
+			// Load ctrlEmpty into each byte of a control word.
+			var ctrlsEmpty uint64 = abi.SwissMapCtrlEmpty
+			e := s.constInt64(types.Types[types.TUINT64], int64(ctrlsEmpty))
+			// Explicit copy to fp register. See
+			// https://go.dev/issue/70451.
+			efp := s.newValue1(ssa.OpAMD64MOVQi2f, types.TypeInt128, e)
+
+			// Compare each byte of the control word with ctrlEmpty. Each
+			// matching byte has every bit set.
+			eq := s.newValue2(ssa.OpAMD64PCMPEQB, types.TypeInt128, efp, gfp)
+
+			// Construct a "byte mask": each output bit is equal to
+			// the sign bit each input byte.
+			//
+			// This results in a packed output (bit N set means
+			// byte N matched).
+			//
+			// NOTE: See comment above on bitsetFirst.
+			out := s.newValue1(ssa.OpAMD64PMOVMSKB, types.Types[types.TUINT16], eq)
+
+			// g is only 64-bits so the upper 64-bits of the
+			// 128-bit register will be zero. The upper 64-bits of
+			// efp are also zero, so we'll get matches on those
+			// bytes. Truncate the upper bits to ignore such
+			// matches.
+			return s.newValue1(ssa.OpZeroExt8to64, types.Types[types.TUINT64], out)
+		},
+		sys.AMD64)
+
+	addF("internal/runtime/maps", "ctrlGroupMatchEmptyOrDeleted",
+		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+			// An empty slot is   1000 0000
+			// A deleted slot is  1111 1110
+			// A full slot is     0??? ????
+			//
+			// A slot is empty or deleted iff bit 7 (sign bit) is
+			// set.
+
+			g := args[0]
+
+			// Explicit copy to fp register. See
+			// https://go.dev/issue/70451.
+			gfp := s.newValue1(ssa.OpAMD64MOVQi2f, types.TypeInt128, g)
+
+			// Construct a "byte mask": each output bit is equal to
+			// the sign bit each input byte. The sign bit is only
+			// set for empty or deleted slots.
+			//
+			// This results in a packed output (bit N set means
+			// byte N matched).
+			//
+			// NOTE: See comment above on bitsetFirst.
+			ret := s.newValue1(ssa.OpAMD64PMOVMSKB, types.Types[types.TUINT16], gfp)
+
+			// g is only 64-bits so the upper 64-bits of the
+			// 128-bit register will be zero. Zero will never match
+			// ctrlEmpty or ctrlDeleted, so no need to truncate.
+
+			return ret
+		},
+		sys.AMD64)
+
+	addF("internal/runtime/maps", "ctrlGroupMatchFull",
+		func(s *state, n *ir.CallExpr, args []*ssa.Value) *ssa.Value {
+			// An empty slot is   1000 0000
+			// A deleted slot is  1111 1110
+			// A full slot is     0??? ????
+			//
+			// A slot is full iff bit 7 (sign bit) is unset.
+
+			g := args[0]
+
+			// Explicit copy to fp register. See
+			// https://go.dev/issue/70451.
+			gfp := s.newValue1(ssa.OpAMD64MOVQi2f, types.TypeInt128, g)
+
+			// Construct a "byte mask": each output bit is equal to
+			// the sign bit each input byte. The sign bit is only
+			// set for empty or deleted slots.
+			//
+			// This results in a packed output (bit N set means
+			// byte N matched).
+			//
+			// NOTE: See comment above on bitsetFirst.
+			mask := s.newValue1(ssa.OpAMD64PMOVMSKB, types.Types[types.TUINT16], gfp)
+
+			// Invert the mask to set the bits for the full slots.
+			out := s.newValue1(ssa.OpCom16, types.Types[types.TUINT16], mask)
+
+			// g is only 64-bits so the upper 64-bits of the
+			// 128-bit register will be zero, with bit 7 unset.
+			// Truncate the upper bits to ignore these.
+			return s.newValue1(ssa.OpZeroExt8to64, types.Types[types.TUINT64], out)
+		},
+		sys.AMD64)
 }
 
 // findIntrinsic returns a function which builds the SSA equivalent of the

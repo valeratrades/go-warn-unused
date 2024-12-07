@@ -12,6 +12,7 @@ import (
 )
 
 const (
+	offsetLOONG64HasLAMCAS = unsafe.Offsetof(cpu.Loong64.HasLAMCAS)
 	offsetLoong64HasLAM_BH = unsafe.Offsetof(cpu.Loong64.HasLAM_BH)
 )
 
@@ -23,6 +24,9 @@ func Xadd64(ptr *uint64, delta int64) uint64
 
 //go:noescape
 func Xadduintptr(ptr *uintptr, delta uintptr) uintptr
+
+//go:noescape
+func Xchg8(ptr *uint8, new uint8) uint8
 
 //go:noescape
 func Xchg(ptr *uint32, new uint32) uint32

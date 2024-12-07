@@ -10,6 +10,7 @@ import (
 	"cmd/compile/internal/types2"
 	"fmt"
 	"go/build"
+	"internal/exportdata"
 	"internal/testenv"
 	"os"
 	"os/exec"
@@ -101,7 +102,7 @@ func TestImportTestdata(t *testing.T) {
 
 		importMap := map[string]string{}
 		for _, pkg := range wantImports {
-			export, _, err := FindPkg(pkg, "testdata")
+			export, _, err := exportdata.FindPkg(pkg, "testdata")
 			if export == "" {
 				t.Fatalf("no export data found for %s: %v", pkg, err)
 			}
@@ -162,17 +163,29 @@ func TestVersionHandling(t *testing.T) {
 		// test that export data can be imported
 		_, err := Import(make(map[string]*types2.Package), pkgpath, dir, nil)
 		if err != nil {
-			// ok to fail if it fails with a no longer supported error for select files
+			// ok to fail if it fails with a 'not the start of an archive file' error for select files
 			if strings.Contains(err.Error(), "no longer supported") {
 				switch name {
-				case "test_go1.7_0.a", "test_go1.7_1.a",
-					"test_go1.8_4.a", "test_go1.8_5.a",
-					"test_go1.11_6b.a", "test_go1.11_999b.a":
+				case "test_go1.8_4.a",
+					"test_go1.8_5.a":
 					continue
 				}
 				// fall through
 			}
-			// ok to fail if it fails with a newer version error for select files
+			// ok to fail if it fails with a 'no longer supported' error for select files
+			if strings.Contains(err.Error(), "no longer supported") {
+				switch name {
+				case "test_go1.7_0.a",
+					"test_go1.7_1.a",
+					"test_go1.8_4.a",
+					"test_go1.8_5.a",
+					"test_go1.11_6b.a",
+					"test_go1.11_999b.a":
+					continue
+				}
+				// fall through
+			}
+			// ok to fail if it fails with a 'newer version' error for select files
 			if strings.Contains(err.Error(), "newer version") {
 				switch name {
 				case "test_go1.11_999i.a":
@@ -192,6 +205,8 @@ func TestVersionHandling(t *testing.T) {
 		}
 		// 2) find export data
 		i := bytes.Index(data, []byte("\n$$B\n")) + 5
+		// Export data can contain "\n$$\n" in string constants, however,
+		// searching for the next end of section marker "\n$$\n" is good enough for testzs.
 		j := bytes.Index(data[i:], []byte("\n$$\n")) + i
 		if i < 0 || j < 0 || i > j {
 			t.Fatalf("export data section not found (i = %d, j = %d)", i, j)
@@ -264,7 +279,7 @@ var importedObjectTests = []struct {
 	{"math.Pi", "const Pi untyped float"},
 	{"math.Sin", "func Sin(x float64) float64"},
 	{"go/ast.NotNilFilter", "func NotNilFilter(_ string, v reflect.Value) bool"},
-	{"go/internal/gcimporter.FindPkg", "func FindPkg(path string, srcDir string) (filename string, id string, err error)"},
+	{"internal/exportdata.FindPkg", "func FindPkg(path string, srcDir string) (filename string, id string, err error)"},
 
 	// interfaces
 	{"context.Context", "type Context interface{Deadline() (deadline time.Time, ok bool); Done() <-chan struct{}; Err() error; Value(key any) any}"},
@@ -426,7 +441,7 @@ func TestIssue13566(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	jsonExport, _, err := FindPkg("encoding/json", "testdata")
+	jsonExport, _, err := exportdata.FindPkg("encoding/json", "testdata")
 	if jsonExport == "" {
 		t.Fatalf("no export data found for encoding/json: %v", err)
 	}

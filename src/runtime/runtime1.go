@@ -331,6 +331,7 @@ var debug struct {
 	traceadvanceperiod       int32
 	traceCheckStackOwnership int32
 	profstackdepth           int32
+	dataindependenttiming    int32
 
 	// debug.malloc is used as a combined debug check
 	// in the malloc function and should be set
@@ -367,6 +368,7 @@ var dbgvars = []*dbgVar{
 	{name: "asynctimerchan", atomic: &debug.asynctimerchan},
 	{name: "cgocheck", value: &debug.cgocheck},
 	{name: "clobberfree", value: &debug.clobberfree},
+	{name: "dataindependenttiming", value: &debug.dataindependenttiming},
 	{name: "disablethp", value: &debug.disablethp},
 	{name: "dontfreezetheworld", value: &debug.dontfreezetheworld},
 	{name: "efence", value: &debug.efence},
@@ -725,12 +727,12 @@ func reflect_addReflectOff(ptr unsafe.Pointer) int32 {
 	return id
 }
 
-//go:linkname fips_getIndicator crypto/internal/fips.getIndicator
+//go:linkname fips_getIndicator crypto/internal/fips140.getIndicator
 func fips_getIndicator() uint8 {
 	return getg().fipsIndicator
 }
 
-//go:linkname fips_setIndicator crypto/internal/fips.setIndicator
+//go:linkname fips_setIndicator crypto/internal/fips140.setIndicator
 func fips_setIndicator(indicator uint8) {
 	getg().fipsIndicator = indicator
 }

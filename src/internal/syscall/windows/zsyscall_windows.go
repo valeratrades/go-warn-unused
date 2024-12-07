@@ -49,8 +49,12 @@ var (
 
 	procAdjustTokenPrivileges             = modadvapi32.NewProc("AdjustTokenPrivileges")
 	procDuplicateTokenEx                  = modadvapi32.NewProc("DuplicateTokenEx")
+	procGetSidIdentifierAuthority         = modadvapi32.NewProc("GetSidIdentifierAuthority")
+	procGetSidSubAuthority                = modadvapi32.NewProc("GetSidSubAuthority")
+	procGetSidSubAuthorityCount           = modadvapi32.NewProc("GetSidSubAuthorityCount")
 	procImpersonateLoggedOnUser           = modadvapi32.NewProc("ImpersonateLoggedOnUser")
 	procImpersonateSelf                   = modadvapi32.NewProc("ImpersonateSelf")
+	procIsValidSid                        = modadvapi32.NewProc("IsValidSid")
 	procLogonUserW                        = modadvapi32.NewProc("LogonUserW")
 	procLookupPrivilegeValueW             = modadvapi32.NewProc("LookupPrivilegeValueW")
 	procOpenSCManagerW                    = modadvapi32.NewProc("OpenSCManagerW")
@@ -89,6 +93,8 @@ var (
 	procNetUserDel                        = modnetapi32.NewProc("NetUserDel")
 	procNetUserGetLocalGroups             = modnetapi32.NewProc("NetUserGetLocalGroups")
 	procNtCreateFile                      = modntdll.NewProc("NtCreateFile")
+	procNtOpenFile                        = modntdll.NewProc("NtOpenFile")
+	procNtSetInformationFile              = modntdll.NewProc("NtSetInformationFile")
 	procRtlGetVersion                     = modntdll.NewProc("RtlGetVersion")
 	procRtlNtStatusToDosErrorNoTeb        = modntdll.NewProc("RtlNtStatusToDosErrorNoTeb")
 	procGetProcessMemoryInfo              = modpsapi.NewProc("GetProcessMemoryInfo")
@@ -120,6 +126,24 @@ func DuplicateTokenEx(hExistingToken syscall.Token, dwDesiredAccess uint32, lpTo
 	return
 }
 
+func getSidIdentifierAuthority(sid *syscall.SID) (idauth uintptr) {
+	r0, _, _ := syscall.Syscall(procGetSidIdentifierAuthority.Addr(), 1, uintptr(unsafe.Pointer(sid)), 0, 0)
+	idauth = uintptr(r0)
+	return
+}
+
+func getSidSubAuthority(sid *syscall.SID, subAuthorityIdx uint32) (subAuth uintptr) {
+	r0, _, _ := syscall.Syscall(procGetSidSubAuthority.Addr(), 2, uintptr(unsafe.Pointer(sid)), uintptr(subAuthorityIdx), 0)
+	subAuth = uintptr(r0)
+	return
+}
+
+func getSidSubAuthorityCount(sid *syscall.SID) (count uintptr) {
+	r0, _, _ := syscall.Syscall(procGetSidSubAuthorityCount.Addr(), 1, uintptr(unsafe.Pointer(sid)), 0, 0)
+	count = uintptr(r0)
+	return
+}
+
 func ImpersonateLoggedOnUser(token syscall.Token) (err error) {
 	r1, _, e1 := syscall.Syscall(procImpersonateLoggedOnUser.Addr(), 1, uintptr(token), 0, 0)
 	if r1 == 0 {
@@ -133,6 +157,12 @@ func ImpersonateSelf(impersonationlevel uint32) (err error) {
 	if r1 == 0 {
 		err = errnoErr(e1)
 	}
+	return
+}
+
+func IsValidSid(sid *syscall.SID) (valid bool) {
+	r0, _, _ := syscall.Syscall(procIsValidSid.Addr(), 1, uintptr(unsafe.Pointer(sid)), 0, 0)
+	valid = r0 != 0
 	return
 }
 
@@ -443,6 +473,22 @@ func NetUserGetLocalGroups(serverName *uint16, userName *uint16, level uint32, f
 
 func NtCreateFile(handle *syscall.Handle, access uint32, oa *OBJECT_ATTRIBUTES, iosb *IO_STATUS_BLOCK, allocationSize *int64, attributes uint32, share uint32, disposition uint32, options uint32, eabuffer uintptr, ealength uint32) (ntstatus error) {
 	r0, _, _ := syscall.Syscall12(procNtCreateFile.Addr(), 11, uintptr(unsafe.Pointer(handle)), uintptr(access), uintptr(unsafe.Pointer(oa)), uintptr(unsafe.Pointer(iosb)), uintptr(unsafe.Pointer(allocationSize)), uintptr(attributes), uintptr(share), uintptr(disposition), uintptr(options), uintptr(eabuffer), uintptr(ealength), 0)
+	if r0 != 0 {
+		ntstatus = NTStatus(r0)
+	}
+	return
+}
+
+func NtOpenFile(handle *syscall.Handle, access uint32, oa *OBJECT_ATTRIBUTES, iosb *IO_STATUS_BLOCK, share uint32, options uint32) (ntstatus error) {
+	r0, _, _ := syscall.Syscall6(procNtOpenFile.Addr(), 6, uintptr(unsafe.Pointer(handle)), uintptr(access), uintptr(unsafe.Pointer(oa)), uintptr(unsafe.Pointer(iosb)), uintptr(share), uintptr(options))
+	if r0 != 0 {
+		ntstatus = NTStatus(r0)
+	}
+	return
+}
+
+func NtSetInformationFile(handle syscall.Handle, iosb *IO_STATUS_BLOCK, inBuffer uintptr, inBufferLen uint32, class uint32) (ntstatus error) {
+	r0, _, _ := syscall.Syscall6(procNtSetInformationFile.Addr(), 5, uintptr(handle), uintptr(unsafe.Pointer(iosb)), uintptr(inBuffer), uintptr(inBufferLen), uintptr(class), 0)
 	if r0 != 0 {
 		ntstatus = NTStatus(r0)
 	}

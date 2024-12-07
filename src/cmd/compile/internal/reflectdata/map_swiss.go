@@ -109,7 +109,6 @@ func swissTableType() *types.Type {
 	//     // From groups.
 	//     groups_data       unsafe.Pointer
 	//     groups_lengthMask uint64
-	//     groups_entryMask  uint64
 	// }
 	// must match internal/runtime/maps/table.go:table.
 	fields := []*types.Field{
@@ -120,7 +119,6 @@ func swissTableType() *types.Type {
 		makefield("index", types.Types[types.TINT]),
 		makefield("groups_data", types.Types[types.TUNSAFEPTR]),
 		makefield("groups_lengthMask", types.Types[types.TUINT64]),
-		makefield("groups_entryMask", types.Types[types.TUINT64]),
 	}
 
 	n := ir.NewDeclNameAt(src.NoXPos, ir.OTYPE, ir.Pkgs.InternalMaps.Lookup("table"))
@@ -131,9 +129,9 @@ func swissTableType() *types.Type {
 	table.SetUnderlying(types.NewStruct(fields))
 	types.CalcSize(table)
 
-	// The size of table should be 40 bytes on 64 bit
-	// and 32 bytes on 32 bit platforms.
-	if size := int64(3*2 + 2*1 /* one extra for padding */ + 2*8 + 2*types.PtrSize); table.Size() != size {
+	// The size of table should be 32 bytes on 64 bit
+	// and 24 bytes on 32 bit platforms.
+	if size := int64(3*2 + 2*1 /* one extra for padding */ + 1*8 + 2*types.PtrSize); table.Size() != size {
 		base.Fatalf("internal/runtime/maps.table size not correct: got %d, want %d", table.Size(), size)
 	}
 
@@ -271,11 +269,18 @@ func writeSwissMapType(t *types.Type, lsym *obj.LSym, c rttype.Cursor) {
 
 	slotTyp := gtyp.Field(1).Type.Elem()
 	elemOff := slotTyp.Field(1).Offset
+	if AlgType(t.Key()) == types.AMEM64 && elemOff != 8 {
+		base.Fatalf("runtime assumes elemOff for 8-byte keys is 8, got %d", elemOff)
+	}
+	if AlgType(t.Key()) == types.ASTRING && elemOff != int64(2*types.PtrSize) {
+		base.Fatalf("runtime assumes elemOff for string keys is %d, got %d", 2*types.PtrSize, elemOff)
+	}
 
 	c.Field("Key").WritePtr(s1)
 	c.Field("Elem").WritePtr(s2)
 	c.Field("Group").WritePtr(s3)
 	c.Field("Hasher").WritePtr(hasher)
+	c.Field("GroupSize").WriteUintptr(uint64(gtyp.Size()))
 	c.Field("SlotSize").WriteUintptr(uint64(slotTyp.Size()))
 	c.Field("ElemOff").WriteUintptr(uint64(elemOff))
 	var flags uint32
