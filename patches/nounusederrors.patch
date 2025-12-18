@@ -1,0 +1,79 @@
+diff --git a/src/cmd/compile/internal/base/flag.go b/src/cmd/compile/internal/base/flag.go
+--- a/src/cmd/compile/internal/base/flag.go
++++ b/src/cmd/compile/internal/base/flag.go
+@@ -113,6 +113,7 @@ type CmdFlags struct {
+ 	MemProfileRate     int          "help:\"set runtime.MemProfileRate to `rate`\""
+ 	MutexProfile       string       "help:\"write mutex profile to `file`\""
+ 	NoLocalImports     bool         "help:\"reject local (relative) imports\""
++	NoUnusedErrors     bool         "help:\"treat unused errors as warnings\""
+ 	CoverageCfg        func(string) "help:\"read coverage configuration from `file`\""
+ 	Pack               bool         "help:\"write to file.a instead of file.o\""
+ 	Race               bool         "help:\"enable race detector\""
+diff --git a/src/cmd/compile/internal/types2/errors.go b/src/cmd/compile/internal/types2/errors.go
+--- a/src/cmd/compile/internal/types2/errors.go
++++ b/src/cmd/compile/internal/types2/errors.go
+@@ -7,6 +7,7 @@
+ package types2
+
+ import (
++	"cmd/compile/internal/base"
+ 	"cmd/compile/internal/syntax"
+ 	"fmt"
+ 	. "internal/types/errors"
+@@ -232,6 +233,17 @@ func (check *Checker) softErrorf(at poser, code Code, format string, args ...any
+ 	err.report()
+ }
+
++func (check *Checker) unusedf(at poser, code Code, format string, args ...any) {
++	if base.Flag.NoUnusedErrors {
++		err := check.newError(code)
++		err.addf(at, format, args...)
++		fmt.Printf("%s: warning: %s\n", err.pos(), err.msg())
++	} else {
++		check.softErrorf(at, code, format, args...)
++	}
++}
++
++
+ func (check *Checker) versionErrorf(at poser, v goVersion, format string, args ...any) {
+ 	msg := check.sprintf(format, args...)
+ 	err := check.newError(UnsupportedFeature)
+diff --git a/src/cmd/compile/internal/types2/labels.go b/src/cmd/compile/internal/types2/labels.go
+--- a/src/cmd/compile/internal/types2/labels.go
++++ b/src/cmd/compile/internal/types2/labels.go
+@@ -40,7 +40,7 @@ func (check *Checker) labels(body *syntax.BlockStmt) {
+ 	for name, obj := range all.elems {
+ 		obj = resolve(name, obj)
+ 		if lbl := obj.(*Label); !lbl.used {
+-			check.softErrorf(lbl.pos, UnusedLabel, "label %s declared and not used", lbl.name)
++			check.unusedf(lbl.pos, UnusedLabel, "label %s declared and not used", lbl.name)
+ 		}
+ 	}
+ }
+diff --git a/src/cmd/compile/internal/types2/resolver.go b/src/cmd/compile/internal/types2/resolver.go
+--- a/src/cmd/compile/internal/types2/resolver.go
++++ b/src/cmd/compile/internal/types2/resolver.go
+@@ -733,9 +733,9 @@ func (check *Checker) errorUnusedPkg(obj *PkgName) {
+ 		elem = elem[i+1:]
+ 	}
+ 	if obj.name == "" || obj.name == "." || obj.name == elem {
+-		check.softErrorf(obj, UnusedImport, "%q imported and not used", path)
++		check.unusedf(obj, UnusedImport, "%q imported and not used", path)
+ 	} else {
+-		check.softErrorf(obj, UnusedImport, "%q imported as %s and not used", path, obj.name)
++		check.unusedf(obj, UnusedImport, "%q imported as %s and not used", path, obj.name)
+ 	}
+ }
+
+diff --git a/src/cmd/compile/internal/types2/stmt.go b/src/cmd/compile/internal/types2/stmt.go
+--- a/src/cmd/compile/internal/types2/stmt.go
++++ b/src/cmd/compile/internal/types2/stmt.go
+@@ -66,7 +66,7 @@ func (check *Checker) usage(scope *Scope) {
+ 		return cmpPos(a.pos, b.pos)
+ 	})
+ 	for _, v := range unused {
+-		check.softErrorf(v.pos, UnusedVar, "declared and not used: %s", v.name)
++		check.unusedf(v.pos, UnusedVar, "declared and not used: %s", v.name)
+ 	}
+
+ 	for _, scope := range scope.children {
